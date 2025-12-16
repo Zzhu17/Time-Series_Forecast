@@ -1,0 +1,190 @@
+# 默认字段设置
+default:
+  time_col: date
+  value_col: value
+  device: cpu
+  dtype: float32
+  seed: 42
+  feature_cols: ["value"]
+
+# 模型类型
+model_type: lstm
+
+# 通用阈值设置
+thresholds:
+  # 误差阈值：当验证集同时满足这两个阈值（logic=and）时，才允许早停
+  MAPE: 0.05          # 5%
+  RMSE: 10            # 10（与数据度量一致）
+  early_stop_metric: MAPE   # 仍保留基准早停参考（不移除此键，保证兼容）
+
+  # === 新增：与训练早停联动的策略参数（train.py 将读取）===
+  apply_to: val             # 对哪一段进行阈值判断：val / test
+  logic: and                # and / or：需要同时满足还是满足其一才允许停止
+  enforce_in_early_stop: true   # 将阈值作为“允许停止”的前置条件
+  patience_reset_if_worse: true # 若阈值未达标，则自动重置 patience 计数继续训练
+
+metrics:
+  robust_rmse: false        # 若想减少离群点影响，可改为 true（需在代码侧支持）
+
+# 调参设置
+optimization:
+  n_trials: 50
+
+# Prophet 参数
+prophet:
+  yearly_seasonality: true
+  weekly_seasonality: false
+  daily_seasonality: false
+  seasonality_mode: additive
+  changepoint_prior_scale: 0.05
+
+# 多模型结构参数
+model_config:
+  Informer:
+    seq_len: 96
+    label_len: 48
+    pred_len: 24
+    d_model: 64
+    d_ff: 192
+    n_heads: 4
+    e_layers: 3
+    d_layers: 1
+    dropout: 0.05
+    factor: 3
+    attn: prob
+    batch_size: 16
+    n_epochs: 30
+    patience: 8
+    learning_rate: 0.0002
+    weight_decay: 0.0001
+    embed: fixed
+    freq: t
+    enc_in: 1
+    dec_in: 1
+    c_out: 1
+    # === 自动特征列（单/多变量）开关 ===
+    auto_feature_cols: true                 # 为 true 时，若未显式指定 feature_cols，则自动从数据中推断
+    feature_cols_strategy: all_numeric_except_time  # 自动策略：取所有数值列（排除 time_col），并将 value_col 放在首位
+    lock_feature_order: true                # 训练确定列顺序后在预测端严格对齐顺序（不一致则报错）
+    # 若 auto_feature_cols 为 true 且未显式给出 feature_cols，将按 feature_cols_strategy 自动推断
+    # 若明确给出 feature_cols，则以该列表为准（并仍保证 value_col 在首位）
+    feature_cols:        # Informer 主模型输入特征列表（支持多变量！）
+      - value
+      # - open
+      # - high
+      # - low
+      # - volume
+      # - temperature
+      # - windspeed
+
+  LSTM:
+    seq_len: 60
+    label_len: 30
+    pred_len: 30
+    hidden_dim: 128
+    num_layers: 2
+    batch_size: 32
+    n_epochs: 20
+    learning_rate: 0.001  
+    weight_decay: 0.0001 
+  Prophet:
+    yearly_seasonality: true
+    weekly_seasonality: false
+    daily_seasonality: false
+    seasonality_mode: additive
+    changepoint_prior_scale: 0.05
+    seq_len: 90
+    pred_len: 30
+
+  ARIMA:
+    mode: smart
+    boxcox: true
+    use_seasonal: true
+    seasonal_period: 7
+    max_p: 8
+    max_d: 2
+    max_q: 8
+    max_P: 4
+    max_D: 1
+    max_Q: 4
+    stepwise: false
+    seasonal_test: ocsb
+    enforce_stationarity: false
+    enforce_invertibility: false
+
+    rolling:
+      forecast_h: 1
+      refit_every: 3
+      use_refit_on_exception: true
+
+    # === 训练/切分（若不走全局 6:2:2，这里兜底）===
+    train:
+      val_ratio: 0.2             # 训练集之后留 20% 做验证
+      test_ratio: 0.2            # 再从剩余里留 20% 做测试
+
+    # === 诊断输出 ===
+    diagnostics:
+      ljungbox_alpha: 0.05
+      save_plots: false          # 如需保存 ACF/PACF/QQ 图，改为 true
+      plot_path: "artifacts/arima_diagnostics"
+
+
+
+  RandomForest:
+    # RF 默认参数；若启用 Optuna 调参，这些仅作为初始值参考
+    n_lags: 10
+    n_estimators: 200
+    max_depth: 10
+    min_samples_split: 2
+    min_samples_leaf: 1
+    random_state: 42
+
+# Residual 模型设置
+residual_modeling:
+  enabled: true
+  compare_metric: MAPE
+  model_type: Ridge              # 支持 LinearRegression, Ridge, Lasso, MLP, etc
+  multi_step: true               # 多步残差建模
+  use_x_feature: true            # 是否拼接主模型特征
+  feature_cols:                  # 残差建模可用特征
+    - value
+    # - open
+    # - high
+    # - temperature
+  device: cpu
+  dtype: float32
+
+prediction:
+  rolling:
+    enabled: true
+    step: 1
+    mode: mean
+    calibrate: true 
+    variance_calibration:
+      enabled: true
+      k_mult: 2.0
+      ratio_lb: 0.7
+      ratio_ub: 1.5
+  ui:
+    horizons_hours: [24, 72, 168]   # 1天/3天/7天（按小时频率）。若为日频，可替换成 [1, 7, 14]
+
+# 通用模型配置参数，包括阈值设定与模型默认结构
+
+logging:
+  level: DEBUG
+  save_log: true
+  log_path: logs/app.log
+
+artifacts:
+  model_path: artifacts/informer_model.pth
+  scaler_path: artifacts/scaler.pkl
+  residual_model_path: artifacts/residual_model.pkl
+  # 训练端在此保存特征列定义及仅针对目标列的缩放器，预测端按此加载
+  feature_cols_path: artifacts/feature_cols.json
+  y_scaler_path: artifacts/value_scaler.pkl
+
+# Debug 配置
+debug:
+  enabled: true
+  print_shapes: true
+  print_samples: true
