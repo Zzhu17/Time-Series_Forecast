@@ -1,8 +1,18 @@
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
+# Matplotlib can hang with interactive backends on macOS/Streamlit; force a headless backend.
+try:
+    import matplotlib
+    matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+    _HAS_MPL = True
+except Exception:  # pragma: no cover
+    plt = None
+    mdates = None
+    _HAS_MPL = False
 import pandas as pd
 import numpy as np
 import os
+import warnings
 from typing import Optional, Dict
 
 # --- Helper: Convert any datetime-like scalar to Matplotlib float ---
@@ -26,7 +36,12 @@ def _to_num_scalar(ts: Any) -> float:
     try:
         # Build a one-element object Series and coerce with errors='coerce' to avoid overload warnings
         ts_ser = pd.Series([ts], dtype="object")
-        ts_coerced = pd.to_datetime(ts_ser, errors="coerce").iloc[0]
+        ts_coerced = pd.to_datetime(ts_ser, errors="coerce", utc=True).iloc[0]
+        try:
+            if isinstance(ts_coerced, pd.Timestamp) and ts_coerced.tz is not None:
+                ts_coerced = ts_coerced.tz_localize(None)
+        except Exception:
+            pass
 
         # Handle numpy datetime64 scalar -> python datetime
         if hasattr(ts_coerced, "item") and not isinstance(ts_coerced, (pd.Timestamp, datetime)):
@@ -36,15 +51,217 @@ def _to_num_scalar(ts: Any) -> float:
                 pass
 
         if isinstance(ts_coerced, pd.Timestamp):
-            dt = ts_coerced.to_pydatetime()
+            try:
+                dt = ts_coerced.to_pydatetime(warn=False)
+            except TypeError:
+                dt = ts_coerced.to_pydatetime()
         elif isinstance(ts_coerced, datetime):
             dt = ts_coerced
         else:
             return float("nan")
 
-        return float(mdates.date2num(dt))
+        return float(mdates.date2num(dt)) # pyright: ignore[reportOptionalMemberAccess]
     except Exception:
         return float("nan")
+
+def df_from_long(
+    long_obj,
+    time_col: str,
+    value_name_true: str = "y_true",
+    value_name_pred: str = "yhat",
+) -> pd.DataFrame:
+    try:
+        if not isinstance(long_obj, dict):
+            return pd.DataFrame(columns=[time_col, value_name_true, value_name_pred])
+        ts = list(long_obj.get("timestamps") or [])
+        y_t = list(long_obj.get("y_true") or [])
+        y_h = list(long_obj.get("yhat") or [])
+        n = min(len(ts), len(y_t), len(y_h))
+        if n == 0:
+            return pd.DataFrame(columns=[time_col, value_name_true, value_name_pred])
+        return pd.DataFrame(
+            {
+                time_col: ts[:n],
+                value_name_true: pd.to_numeric(y_t[:n], errors="coerce"),
+                value_name_pred: pd.to_numeric(y_h[:n], errors="coerce"),
+            }
+        )
+    except Exception:
+        return pd.DataFrame(columns=[time_col, value_name_true, value_name_pred])
+
+
+def extract_dense_for_chart(df: Optional[pd.DataFrame], time_col: str) -> Optional[pd.DataFrame]:
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return None
+
+    if {"ts", "true", "pred"} <= set(df.columns):
+        try:
+            out = df[["ts", "true", "pred"]].copy()
+            out["ts"] = pd.to_datetime(out["ts"], errors="coerce", utc=True)
+            try:
+                out["ts"] = out["ts"].dt.tz_localize(None) # type: ignore
+            except Exception:
+                pass
+            out["true"] = pd.to_numeric(out["true"], errors="coerce")
+            out["pred"] = pd.to_numeric(out["pred"], errors="coerce")
+            out = out.dropna(subset=["ts", "true", "pred"])
+            return out if not out.empty else None
+        except Exception:
+            return None
+
+    if "y_true" not in df.columns or "yhat" not in df.columns:
+        return None
+
+    if isinstance(df.index, pd.DatetimeIndex):
+        ts = df.index
+    else:
+        ts_col = time_col if time_col in df.columns else None
+        if ts_col is None:
+            for cand in ("timestamp", "timestamps", "date", "time"):
+                if cand in df.columns:
+                    ts_col = cand
+                    break
+        if ts_col is not None:
+            ts = pd.to_datetime(df[ts_col], errors="coerce", utc=True)
+        else:
+            ts = pd.to_datetime(df.index, errors="coerce", utc=True)
+
+    try:
+        ts = pd.to_datetime(ts, errors="coerce", utc=True).tz_localize(None)
+    except Exception:
+        pass
+
+    y_true = pd.to_numeric(df["y_true"], errors="coerce").to_numpy(dtype=float)
+    y_pred = pd.to_numeric(df["yhat"], errors="coerce").to_numpy(dtype=float)
+
+    m = (~pd.isna(ts)) & (~np.isnan(y_true)) & (~np.isnan(y_pred))
+    try:
+        m = m.to_numpy()
+    except Exception:
+        pass
+
+    ts = np.asarray(ts)[m]
+    y_true = np.asarray(y_true)[m]
+    y_pred = np.asarray(y_pred)[m]
+    if ts.size == 0:
+        return None
+
+    return pd.DataFrame({"ts": pd.to_datetime(ts), "true": y_true, "pred": y_pred})
+
+
+def _try_import_plotly_go():
+    try:
+        import plotly.graph_objects as go  # type: ignore
+
+        return True, go
+    except Exception:
+        return False, None
+
+
+def render_true_pred(
+    df_series: Optional[pd.DataFrame],
+    *,
+    title: str,
+    n_points: Optional[int],
+    marker_every: int,
+):
+    import streamlit as st
+
+    if not isinstance(df_series, pd.DataFrame) or df_series.empty:
+        st.info("没有可绘制的数据点。")
+        return
+
+    dfp = df_series.copy()
+    if n_points is not None and n_points > 0 and len(dfp) > n_points:
+        dfp = dfp.iloc[-n_points:].copy()
+
+    xs = pd.to_datetime(dfp["ts"], errors="coerce", utc=True)
+    try:
+        xs = xs.dt.tz_localize(None)
+    except Exception:
+        try:
+            xs = xs.tz_localize(None)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    yt = pd.to_numeric(dfp["true"], errors="coerce").to_numpy(dtype=float)
+    yp = pd.to_numeric(dfp["pred"], errors="coerce").to_numpy(dtype=float)
+    m = np.isfinite(yt) & np.isfinite(yp)
+    xs = np.asarray(xs)[m]
+    yt = np.asarray(yt)[m]
+    yp = np.asarray(yp)[m]
+    if xs.size == 0:
+        st.info("没有可绘制的数据点（全是 NaN）。")
+        return
+
+    has_plotly, go = _try_import_plotly_go()
+    if not has_plotly:
+        st.warning("Plotly 未安装，已使用 Altair 渲染（建议安装：`pip install plotly`）。")
+        try:
+            import altair as alt  # type: ignore
+
+            alt.data_transformers.disable_max_rows()
+            dfa = pd.DataFrame({"ts": pd.to_datetime(xs, errors="coerce"), "true": yt, "pred": yp}).dropna(subset=["ts"])
+            if dfa.empty:
+                st.info("没有可绘制的数据点。")
+                return
+            dfa["_row"] = np.arange(len(dfa), dtype=int)
+
+            base = alt.Chart(dfa).encode(x=alt.X("ts:T", title=None))
+            l1 = base.mark_line(color="#9aa0a6", opacity=0.9, strokeWidth=1.2).encode(y=alt.Y("true:Q", title=None))
+            l2 = base.mark_line(color="#1f77b4", opacity=0.95, strokeWidth=2.2, strokeDash=[6, 3]).encode(y=alt.Y("pred:Q", title=None))
+            pts = (
+                alt.Chart(dfa)
+                .mark_point(color="#1f77b4", filled=True, opacity=0.85, size=25)
+                .encode(x=alt.X("ts:T", title=None), y=alt.Y("pred:Q", title=None))
+                .transform_filter(f"datum._row % {max(1, int(marker_every))} == 0")
+            )
+            st.altair_chart((l1 + l2 + pts).properties(height=280, title=title), use_container_width=True)
+        except Exception:
+            st.line_chart(pd.DataFrame({"true": yt, "pred": yp}, index=pd.to_datetime(xs, errors="coerce")))
+        return
+
+    fig = go.Figure()
+    fig.add_trace(go.Scattergl(x=xs, y=yt, mode="lines", name="true", line=dict(color="#9aa0a6", width=1.2), opacity=0.9))
+    fig.add_trace(go.Scattergl(x=xs, y=yp, mode="lines", name="pred", line=dict(color="#1f77b4", width=2.6, dash="dash"), opacity=0.95))
+    k = max(1, int(marker_every))
+    if xs.size > k:
+        fig.add_trace(
+            go.Scattergl(
+                x=xs[::k],
+                y=yp[::k],
+                mode="markers",
+                name="pred markers",
+                marker=dict(color="#1f77b4", size=5),
+                opacity=0.9,
+                showlegend=False,
+            )
+        )
+    fig.update_layout(
+        title=title,
+        height=320,
+        margin=dict(l=10, r=10, t=40, b=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True, "displaylogo": False})
+
+
+def render_val_test(
+    val_df: Optional[pd.DataFrame],
+    test_df: Optional[pd.DataFrame],
+    *,
+    time_col: str,
+    n_points: Optional[int],
+    marker_every: int,
+):
+    import streamlit as st
+
+    v = extract_dense_for_chart(val_df, time_col=time_col)
+    t = extract_dense_for_chart(test_df, time_col=time_col)
+    c1, c2 = st.columns(2)
+    with c1:
+        render_true_pred(v, title="Validation: True vs Pred", n_points=n_points, marker_every=marker_every)
+    with c2:
+        render_true_pred(t, title="Test: True vs Pred", n_points=n_points, marker_every=marker_every)
 
 def plot_results(
     train_df: pd.DataFrame,
@@ -85,6 +302,9 @@ def plot_results(
         matplotlib.figure.Figure: 返回一个 figure 对象，以便 Streamlit 可以使用 st.pyplot() 展示。
     标签统一为 training_true、validation_true、validation_predict、test_true、test_predict；当 train_df 不含 time_col 时使用其索引作为时间轴。
     """
+    if not _HAS_MPL:
+        raise RuntimeError("matplotlib is required for plot_results; please `pip install matplotlib` or use the fast chart path.")
+
     # ---- 统一 6/2/2 计数优先级：函数参数 > split_lengths > 自动推断 ----
     if (train_len is None or val_len is None or test_len is None) and isinstance(split_lengths, dict):
         try:
@@ -97,7 +317,7 @@ def plot_results(
         except Exception:
             pass
 
-    fig, ax = plt.subplots(figsize=(18, 6))
+    fig, ax = plt.subplots(figsize=(18, 6)) # pyright: ignore[reportOptionalMemberAccess]
     # --- NEW: Continuous-first plotting using pipeline-provided series (robust) ---
     did_continuous = False
     try:
@@ -190,24 +410,109 @@ def plot_results(
 
         # 3) If we now have both, draw and return early
         if isinstance(full_truth, pd.Series) and len(full_truth) and isinstance(full_pred, pd.Series) and len(full_pred):
-            truth_x = pd.to_datetime(pd.Index(full_truth.index)).to_pydatetime()
+            _truth_idx = pd.to_datetime(pd.Index(full_truth.index), errors="coerce", utc=True)
+            try:
+                _truth_idx = _truth_idx.tz_localize(None)
+            except Exception:
+                pass
+            truth_x = _truth_idx.to_numpy()
             truth_y = np.asarray(full_truth.values, dtype=float)
-            pred_x  = pd.to_datetime(pd.Index(full_pred.index)).to_pydatetime()
+            _pred_idx = pd.to_datetime(pd.Index(full_pred.index), errors="coerce", utc=True)
+            try:
+                _pred_idx = _pred_idx.tz_localize(None)
+            except Exception:
+                pass
+            pred_x  = _pred_idx.to_numpy()
             pred_y  = np.asarray(full_pred.values, dtype=float)
-            ax.plot(truth_x, truth_y, label="truth",   color="#2fa3f6", linewidth=2)
-            ax.plot(pred_x,  pred_y,  label="predict", color="#8419e8", linestyle="--", linewidth=2)
+
+            # Downsample very long series to keep Streamlit rendering responsive
+            try:
+                max_points = int(8000)
+                if truth_y.size > max_points:
+                    step = max(1, int(truth_y.size // max_points))
+                    truth_x = truth_x[::step]
+                    truth_y = truth_y[::step]
+                if pred_y.size > max_points:
+                    step2 = max(1, int(pred_y.size // max_points))
+                    pred_x = pred_x[::step2]
+                    pred_y = pred_y[::step2]
+            except Exception:
+                pass
+
+            # Plot only val/test truth+pred (4 lines) for clarity/speed
+            try:
+                # Determine split boundaries
+                t_train_end = None
+                t_val_end = None
+                if isinstance(phase_mask, pd.DataFrame) and len(phase_mask.index):
+                    if 'is_train' in phase_mask.columns and phase_mask['is_train'].any():
+                        t_train_end = pd.to_datetime(pd.Series(phase_mask.index[phase_mask['is_train']], dtype='object'), errors='coerce', utc=True).dt.tz_localize(None).max()
+                    if 'is_val' in phase_mask.columns and phase_mask['is_val'].any():
+                        t_val_end = pd.to_datetime(pd.Series(phase_mask.index[phase_mask['is_val']], dtype='object'), errors='coerce', utc=True).dt.tz_localize(None).max()
+                if t_train_end is None or t_val_end is None:
+                    # Fallback by proportion if phase mask is unavailable
+                    idx_all = pd.to_datetime(pd.Series(full_truth.index, dtype='object'), errors='coerce', utc=True).dt.tz_localize(None)
+                    t_train_end = idx_all.quantile(0.6)
+                    t_val_end = idx_all.quantile(0.8)
+
+                # Convert indices
+                truth_idx = pd.to_datetime(pd.Index(full_truth.index), errors='coerce', utc=True)
+                try:
+                    truth_idx = truth_idx.tz_localize(None)
+                except Exception:
+                    pass
+                pred_idx = pd.to_datetime(pd.Index(full_pred.index), errors='coerce', utc=True)
+                try:
+                    pred_idx = pred_idx.tz_localize(None)
+                except Exception:
+                    pass
+
+                # Build masks
+                val_truth_m = (truth_idx > t_train_end) & (truth_idx <= t_val_end)
+                test_truth_m = truth_idx > t_val_end
+                val_pred_m = (pred_idx > t_train_end) & (pred_idx <= t_val_end)
+                test_pred_m = pred_idx > t_val_end
+
+                val_truth_x = truth_idx[val_truth_m].to_numpy()
+                val_truth_y = np.asarray(full_truth.values, dtype=float)[val_truth_m.to_numpy()]
+                test_truth_x = truth_idx[test_truth_m].to_numpy()
+                test_truth_y = np.asarray(full_truth.values, dtype=float)[test_truth_m.to_numpy()]
+
+                val_pred_x = pred_idx[val_pred_m].to_numpy()
+                val_pred_y = np.asarray(full_pred.values, dtype=float)[val_pred_m.to_numpy()]
+                test_pred_x = pred_idx[test_pred_m].to_numpy()
+                test_pred_y = np.asarray(full_pred.values, dtype=float)[test_pred_m.to_numpy()]
+
+                def _ds(x, y, max_points=4000):
+                    if y.size <= max_points:
+                        return x, y
+                    step = max(1, int(y.size // max_points))
+                    return x[::step], y[::step]
+
+                val_truth_x, val_truth_y = _ds(val_truth_x, val_truth_y)
+                test_truth_x, test_truth_y = _ds(test_truth_x, test_truth_y)
+                val_pred_x, val_pred_y = _ds(val_pred_x, val_pred_y)
+                test_pred_x, test_pred_y = _ds(test_pred_x, test_pred_y)
+
+                ax.plot(val_truth_x, val_truth_y, label='val_true', color='#111111', linewidth=1.1, alpha=0.85, zorder=2, rasterized=True)
+                ax.plot(val_pred_x,  val_pred_y,  label='val_pred', color='#d62728', linestyle=(0,(6,3)), linewidth=2.0, alpha=0.95, zorder=3, rasterized=True)
+                ax.plot(test_truth_x, test_truth_y, label='test_true', color='#2ca02c', linewidth=1.1, alpha=0.85, zorder=2, rasterized=True)
+                ax.plot(test_pred_x,  test_pred_y,  label='test_pred', color='#9467bd', linestyle=(0,(6,3)), linewidth=2.0, alpha=0.95, zorder=3, rasterized=True)
+            except Exception:
+                ax.plot(truth_x, truth_y, label='truth', color='#111111', linewidth=1.0, alpha=0.8, zorder=2, rasterized=True)
+                ax.plot(pred_x,  pred_y,  label='predict', color='#d62728', linestyle=(0,(6,3)), linewidth=2.0, alpha=0.9, zorder=3, rasterized=True)
 
             # optional spans
             if isinstance(phase_mask, pd.DataFrame) and len(phase_mask.index):
                 try:
-                    t0 = pd.to_datetime(pd.Series(full_truth.index)).min()
-                    tend = pd.to_datetime(pd.Series(full_truth.index)).max()
+                    t0 = pd.to_datetime(pd.Series(full_truth.index, dtype="object"), errors="coerce", utc=True).dt.tz_localize(None).min()
+                    tend = pd.to_datetime(pd.Series(full_truth.index, dtype="object"), errors="coerce", utc=True).dt.tz_localize(None).max()
                     t_train_end = None
                     if "is_train" in phase_mask.columns and phase_mask["is_train"].any():
-                        t_train_end = pd.to_datetime(phase_mask.index[phase_mask["is_train"]]).max()
+                        t_train_end = pd.to_datetime(pd.Series(phase_mask.index[phase_mask["is_train"]], dtype="object"), errors="coerce", utc=True).dt.tz_localize(None).max()
                         ax.axvspan(_to_num_scalar(t0), _to_num_scalar(t_train_end), facecolor="#50a6e3", alpha=0.05, lw=0)
                     if "is_val" in phase_mask.columns and phase_mask["is_val"].any():
-                        t_val_end = pd.to_datetime(phase_mask.index[phase_mask["is_val"]]).max()
+                        t_val_end = pd.to_datetime(pd.Series(phase_mask.index[phase_mask["is_val"]], dtype="object"), errors="coerce", utc=True).dt.tz_localize(None).max()
                         if t_train_end is not None:
                             ax.axvspan(_to_num_scalar(t_train_end), _to_num_scalar(t_val_end), facecolor="#be5149a9", lw=0)
                         ax.axvspan(_to_num_scalar(t_val_end), _to_num_scalar(tend), facecolor="#26e1262b", lw=0)
@@ -216,8 +521,14 @@ def plot_results(
 
             # x range & cosmetics
             try:
-                min_ts = min(pd.to_datetime(pd.Series(full_truth.index)).min(), pd.to_datetime(pd.Series(full_pred.index)).min())
-                max_ts = max(pd.to_datetime(pd.Series(full_truth.index)).max(), pd.to_datetime(pd.Series(full_pred.index)).max())
+                min_ts = min(
+                    pd.to_datetime(pd.Series(full_truth.index, dtype="object"), errors="coerce", utc=True).dt.tz_localize(None).min(),
+                    pd.to_datetime(pd.Series(full_pred.index, dtype="object"), errors="coerce", utc=True).dt.tz_localize(None).min(),
+                )
+                max_ts = max(
+                    pd.to_datetime(pd.Series(full_truth.index, dtype="object"), errors="coerce", utc=True).dt.tz_localize(None).max(),
+                    pd.to_datetime(pd.Series(full_pred.index, dtype="object"), errors="coerce", utc=True).dt.tz_localize(None).max(),
+                )
                 if pd.notna(min_ts) and pd.notna(max_ts):
                     ax.set_xlim(_to_num_scalar(min_ts), _to_num_scalar(max_ts))
             except Exception:
@@ -229,13 +540,19 @@ def plot_results(
             ax.set_ylabel("Value", fontsize=12)
             ax.legend(loc="upper left", ncol=3, frameon=False, fontsize=10)
             ax.grid(True, which="both", linestyle="--", linewidth=0.5)
-            plt.tight_layout()
             try:
-                os.makedirs("artifacts/plots", exist_ok=True)
-                fig.savefig("artifacts/plots/full_span.png", dpi=200, bbox_inches="tight")
+                if os.environ.get("TSF_TIGHT_LAYOUT", "0") == "1":
+                    fig.tight_layout()
+            except Exception:
+                pass
+            try:
+                if os.environ.get("TSF_SAVE_PLOTS", "0") == "1":
+                    os.makedirs("artifacts/plots", exist_ok=True)
+                    fig.savefig("artifacts/plots/full_span.png", dpi=160, bbox_inches="tight")
             except Exception:
                 pass
 
+            # Inset zoom disabled by default for speed (set TSF_PLOT_INSET=1 to re-enable in a future revision).
             did_continuous = True
             return fig
     except Exception as _e:
@@ -252,9 +569,25 @@ def plot_results(
 
     def _to_dt(s: pd.Series):
         try:
-            return pd.to_datetime(s)
+            dt = pd.to_datetime(s, errors="coerce", utc=True)
+            try:
+                if isinstance(dt, pd.Series):
+                    dt = dt.dt.tz_localize(None)
+                else:
+                    dt = dt.tz_localize(None)
+            except Exception:
+                pass
+            return dt
         except Exception:
-            return pd.to_datetime(s.astype(str), errors='coerce')
+            dt = pd.to_datetime(s.astype(str), errors='coerce', utc=True)
+            try:
+                if isinstance(dt, pd.Series):
+                    dt = dt.dt.tz_localize(None)
+                else:
+                    dt = dt.tz_localize(None)
+            except Exception:
+                pass
+            return dt
 
     def _as_series(x):
         """Ensure DatetimeIndex/Index becomes a Series for type consistency."""
@@ -497,14 +830,14 @@ def plot_results(
             # 使用已转好的 full_ts/full_y 作为横纵坐标，避免字符串被当成类别轴
             tr_ts, tr_y = _thin_xy(full_ts[train_mask], full_y[train_mask])
             if tr_ts is not None and len(tr_ts) > 0:
-                ax.plot(tr_ts, tr_y, label='training_true', color='dodgerblue', linewidth=2)
+                # training_true hidden for speed/clarity
                 all_ts_for_xlim.append(_as_series(tr_ts))
             va_ts, va_y = _thin_xy(full_ts[val_mask], full_y[val_mask])
             if (va_ts is not None and len(va_ts) > 0) and not val_true_plotted:
-                ax.plot(va_ts, va_y, label='validation_true', color='darkorange', linewidth=2)
+                ax.plot(va_ts, va_y, label='val_true', color='#ff8c00', linewidth=1.1, alpha=0.65, zorder=2)
             te_ts, te_y = _thin_xy(full_ts[test_mask], full_y[test_mask])
             if (te_ts is not None and len(te_ts) > 0) and not test_true_plotted:
-                ax.plot(te_ts, te_y, label='test_true', color='green', linewidth=2)
+                ax.plot(te_ts, te_y, label='test_true', color='#2ca02c', linewidth=1.1, alpha=0.65, zorder=2)
                 all_ts_for_xlim.append(_as_series(te_ts))
 
     # 2) 验证集预测（整段）
@@ -517,7 +850,7 @@ def plot_results(
                 vhat = p_series
                 m = ~vts.isna() & ~vhat.isna()
                 if m.any():
-                    ax.plot(vts[m], vhat[m], label='validation_predict', color='red', linestyle='--')
+                    ax.plot(vts[m], vhat[m], label='val_pred', color='#d62728', linestyle=(0,(6,3)), linewidth=2.2, alpha=0.95, zorder=5)
                     all_ts_for_xlim.append(pd.Series(vts[m]))
         except Exception:
             pass
@@ -528,7 +861,7 @@ def plot_results(
             valid_ts = ~v_ts.isna()
             m = valid_ts & ~v_hat.isna()
             if m.any():
-                ax.plot(v_ts[m], v_hat[m], label='validation_predict', color='red', linestyle='--')
+                ax.plot(v_ts[m], v_hat[m], label='val_pred', color='#d62728', linestyle=(0,(6,3)), linewidth=2.2, alpha=0.95, zorder=5)
                 all_ts_for_xlim.append(_as_series(v_ts[valid_ts]))
         except Exception:
             pass
@@ -539,7 +872,7 @@ def plot_results(
             vhat = p_series
             mv = ~vhat.isna()
             if mv.any():
-                ax.plot(vts[mv], vhat[mv], label='validation_predict', color='red', linestyle='--')
+                ax.plot(vts[mv], vhat[mv], label='val_pred', color='#d62728', linestyle=(0,(6,3)), linewidth=2.2, alpha=0.95, zorder=5)
                 all_ts_for_xlim.append(_as_series(vts[mv]))
     elif isinstance(payload, dict) and all(k in payload for k in ("timestamps", "y_true", "yhat")):
         try:
@@ -547,7 +880,7 @@ def plot_results(
             v_hat = pd.to_numeric(pd.Series(payload.get("yhat", []), dtype="float"), errors='coerce')
             m = ~v_hat.isna()
             if m.any():
-                ax.plot(v_ts[m], v_hat[m], label='validation_predict', color='red', linestyle='--')
+                ax.plot(v_ts[m], v_hat[m], label='val_pred', color='#d62728', linestyle=(0,(6,3)), linewidth=2.2, alpha=0.95, zorder=5)
                 all_ts_for_xlim.append(_as_series(v_ts[m]))
         except Exception:
             pass
@@ -562,7 +895,7 @@ def plot_results(
                 that = p_series_t
                 m = ~tts.isna() & ~that.isna()
                 if m.any():
-                    ax.plot(tts[m], that[m], label='test_predict', color='purple', linestyle='--')
+                    ax.plot(tts[m], that[m], label='test_pred', color='#9467bd', linestyle=(0,(6,3)), linewidth=2.2, alpha=0.95, zorder=5)
                     all_ts_for_xlim.append(pd.Series(tts[m]))
         except Exception:
             pass
@@ -573,7 +906,7 @@ def plot_results(
             valid_ts_t = ~t_ts.isna()
             m = valid_ts_t & ~t_hat.isna()
             if m.any():
-                ax.plot(t_ts[m], t_hat[m], label='test_predict', color='purple', linestyle='--')
+                ax.plot(t_ts[m], t_hat[m], label='test_pred', color='#9467bd', linestyle=(0,(6,3)), linewidth=2.2, alpha=0.95, zorder=5)
                 all_ts_for_xlim.append(_as_series(t_ts[valid_ts_t]))
         except Exception:
             pass
@@ -584,7 +917,7 @@ def plot_results(
             that = p_series_t
             mt = ~that.isna()
             if mt.any():
-                ax.plot(tts[mt], that[mt], label='test_predict', color='purple', linestyle='--')
+                ax.plot(tts[mt], that[mt], label='test_pred', color='#9467bd', linestyle=(0,(6,3)), linewidth=2.2, alpha=0.95, zorder=5)
                 all_ts_for_xlim.append(_as_series(tts[mt]))
 
     # 统一 X 轴范围，防止出现左侧挤压/右侧空白
@@ -612,13 +945,18 @@ def plot_results(
     except Exception:
         pass
 
+    # Inset zoom disabled by default for speed (set TSF_PLOT_INSET=1 to re-enable in a future revision).
     # --- 美化图表 ---
     ax.set_title(title, fontsize=18, weight='bold')
     ax.set_xlabel("Date", fontsize=12)
     ax.set_ylabel("Value", fontsize=12)
     ax.legend(loc='upper left', ncol=3, frameon=False, fontsize=10)
     ax.grid(True, which='both', linestyle='--', linewidth=0.5)
-    plt.tight_layout()
+    try:
+        if os.environ.get("TSF_TIGHT_LAYOUT", "0") == "1":
+            fig.tight_layout()
+    except Exception:
+        pass
 
     # 去重图例标签（避免长序列与切分重复）
     try:
@@ -635,8 +973,9 @@ def plot_results(
         pass
 
     try:
-        os.makedirs("artifacts/plots", exist_ok=True)
-        fig.savefig("artifacts/plots/full_span.png", dpi=200, bbox_inches="tight")
+        if os.environ.get("TSF_SAVE_PLOTS", "0") == "1":
+            os.makedirs("artifacts/plots", exist_ok=True)
+            fig.savefig("artifacts/plots/full_span.png", dpi=200, bbox_inches="tight")
     except Exception:
         pass
     

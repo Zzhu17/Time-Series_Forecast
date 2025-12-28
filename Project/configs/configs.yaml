@@ -43,7 +43,8 @@ model_config:
   Informer:
     seq_len: 96
     label_len: 48
-    pred_len: 24
+    # Shorter training horizon; long horizon handled via rolling/dense 1-step inference.
+    pred_len: 8
     d_model: 64
     d_ff: 192
     n_heads: 4
@@ -52,6 +53,10 @@ model_config:
     dropout: 0.05
     factor: 3
     attn: prob
+    # Validation metric mode:
+    # - window: fast (uses window-based val metrics each epoch)
+    # - rolling: slow (runs dense/rolling inference over the whole val segment each epoch)
+    val_eval_mode: window
     batch_size: 16
     n_epochs: 30
     patience: 8
@@ -66,6 +71,25 @@ model_config:
     auto_feature_cols: true                 # 为 true 时，若未显式指定 feature_cols，则自动从数据中推断
     feature_cols_strategy: all_numeric_except_time  # 自动策略：取所有数值列（排除 time_col），并将 value_col 放在首位
     lock_feature_order: true                # 训练确定列顺序后在预测端严格对齐顺序（不一致则报错）
+    # === 预测端特征契约（缺列处理策略） ===
+    feature_contract:
+      recompute_policy: error               # 预测端：Repairable Core 重算失败则报错（默认安全）
+    # === Train-only 特征筛选（MI + RF importance） ===
+    feature_selection:
+      missing_rate_threshold: 0.4
+      low_variance_threshold: 1e-8
+      redundant_corr_threshold: 0.95
+      max_features: null
+      leakage_name_patterns: ["label", "target", "future", "t+", "lead", "yhat", "predict"]
+      # Feature tiers (generic missing-feature solution):
+      # - Required Core: missing -> fail-fast (train/predict)
+      # - Repairable Core: recompute; fail if cannot recompute
+      # - Optional: missing/NaN -> removed from feature set and recorded
+      required_core_cols: []                # extra required cores besides value_col
+      repairable_core_cols: ["month", "day_of_month", "day_of_week", "hour", "day_of_year"]
+      # Backward-compat alias (treated as required_core_cols if present)
+      core_cols: []
+      safe_default_cols: ["month", "day_of_month", "day_of_week", "hour", "day_of_year"]
     # 若 auto_feature_cols 为 true 且未显式给出 feature_cols，将按 feature_cols_strategy 自动推断
     # 若明确给出 feature_cols，则以该列表为准（并仍保证 value_col 在首位）
     feature_cols:        # Informer 主模型输入特征列表（支持多变量！）
@@ -83,10 +107,24 @@ model_config:
     pred_len: 30
     hidden_dim: 128
     num_layers: 2
-    batch_size: 32
+    batch_size: 64
     n_epochs: 20
     learning_rate: 0.001  
     weight_decay: 0.0001 
+  XGBoost:
+    # Train-only selection + strict missing policy are handled by the unified pipeline.
+    # This model predicts value_col using the remaining feature columns.
+    n_estimators: 2000
+    learning_rate: 0.03
+    max_depth: 6
+    subsample: 0.8
+    colsample_bytree: 0.8
+    reg_lambda: 1.0
+    min_child_weight: 1.0
+    gamma: 0.0
+    early_stopping_rounds: 50
+    tree_method: hist
+    n_jobs: -1
   Prophet:
     yearly_seasonality: true
     weekly_seasonality: false
@@ -167,6 +205,9 @@ prediction:
       ratio_ub: 1.5
   ui:
     horizons_hours: [24, 72, 168]   # 1天/3天/7天（按小时频率）。若为日频，可替换成 [1, 7, 14]
+  degrade:
+    enabled: false                   # 预测端降级模式：当 Required Core 缺失/特征不匹配时切换到基线并标记 degraded=True
+    mode: naive_last                 # 目前实现：naive_last（持久性预测）
 
 # 通用模型配置参数，包括阈值设定与模型默认结构
 

@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import torch
+from utils.device_utils import get_device_from_config
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
@@ -9,6 +10,7 @@ from typing import List, Optional, Tuple
 from models.lstm import lstm_model
 from utils.array_utils import clean_and_unify_arrays
 from utils.sliding_windows import create_windows_for_ml
+from utils.target_transform import fit_target_transform, transform_df_target, inverse_transform_array
 
 # A lightweight fallback scaler in case sklearn is unavailable
 try:  # pragma: no cover - runtime environment guard
@@ -136,6 +138,19 @@ def train_lstm_model(df: pd.DataFrame, config: dict):
         val_df = work.iloc[n_train:n_train + n_val]
         test_df = work.iloc[n_train + n_val:]
 
+        # Optional: target transform before scaling
+        tt_cfg = (config.get("target_transform") or {})
+        if bool(tt_cfg.get("enabled", False)):
+            try:
+                params = fit_target_transform(train_df[value_col].to_numpy(), method=str(tt_cfg.get("method", "log1p")))
+                artifacts["target_transform"] = params
+                artifacts["target_transform_applied"] = True
+                train_df = transform_df_target(train_df, value_col, params)
+                val_df = transform_df_target(val_df, value_col, params)
+                test_df = transform_df_target(test_df, value_col, params)
+            except Exception:
+                artifacts["target_transform"] = None
+
         scaler = scaler or StandardScaler()
         scaler.fit(train_df[feature_cols].astype(np.float32))
 
@@ -180,8 +195,8 @@ def train_lstm_model(df: pd.DataFrame, config: dict):
         if target_pos >= total_len:
             break
         window = values_all[start:end]
-        # 使用差分作为预测目标：Δy(t) = y(t) - y(t-1)
-        target_val = values_all[target_pos, target_idx] - values_all[target_pos - 1, target_idx]
+        # 直接预测下一时刻的目标值（在“缩放 + 目标变换”空间）
+        target_val = values_all[target_pos, target_idx]
         target_ts = ts_all[target_pos]
 
         if target_pos < len(train_df_sc):
@@ -240,7 +255,7 @@ def train_lstm_model(df: pd.DataFrame, config: dict):
             None,
             best_params,
         )
-    device = torch.device(config.get("device") or dft.get("device") or ("cuda" if torch.cuda.is_available() else "cpu"))
+    device = get_device_from_config(config)
     dtype = _dtype_from_config(config)
 
     model = lstm_model(
@@ -321,34 +336,18 @@ def train_lstm_model(df: pd.DataFrame, config: dict):
     test_pred_sc = _predict(test_X)
 
     # inverse to original scale
-    # 先反归一化差分，再还原为绝对值：y_hat(t) = y_{t-1} + Δy_hat
-    val_true_delta = _inverse_target(val_y, scaler, feature_cols, value_col)
-    test_true_delta = _inverse_target(test_y, scaler, feature_cols, value_col)
-    val_pred_delta = _inverse_target(val_pred_sc, scaler, feature_cols, value_col)
-    test_pred_delta = _inverse_target(test_pred_sc, scaler, feature_cols, value_col)
+    val_true = _inverse_target(val_y, scaler, feature_cols, value_col)
+    test_true = _inverse_target(test_y, scaler, feature_cols, value_col)
+    val_pred = _inverse_target(val_pred_sc, scaler, feature_cols, value_col)
+    test_pred = _inverse_target(test_pred_sc, scaler, feature_cols, value_col)
 
-    # 还原为绝对值（使用对应段历史的末值作为起点）
-    def _restore_absolute(delta_arr: np.ndarray, history_last: float) -> np.ndarray:
-        if delta_arr is None or len(delta_arr) == 0:
-            return np.array([], dtype=float)
-        base = float(history_last)
-        out = []
-        cur = base
-        for d in delta_arr:
-            cur = cur + float(d)
-            out.append(cur)
-        return np.asarray(out, dtype=float)
-
-    # 找到各段起点的“上一时刻”真实值
-    last_train_val = _inverse_target(np.asarray([train_df_sc[value_col].iloc[-1]]) if value_col in train_df_sc.columns else np.asarray([train_df_sc[feature_cols[0]].iloc[-1]]), scaler, feature_cols, value_col)
-    last_val_test = _inverse_target(np.asarray([val_df_sc[value_col].iloc[-1]]) if value_col in val_df_sc.columns else np.asarray([val_df_sc[feature_cols[0]].iloc[-1]]), scaler, feature_cols, value_col)
-    last_train_val_val = float(last_train_val.reshape(-1)[-1]) if last_train_val is not None else 0.0
-    last_val_test_val = float(last_val_test.reshape(-1)[-1]) if last_val_test is not None else 0.0
-
-    val_true = _restore_absolute(val_true_delta, last_train_val_val)
-    val_pred = _restore_absolute(val_pred_delta, last_train_val_val)
-    test_true = _restore_absolute(test_true_delta, last_val_test_val)
-    test_pred = _restore_absolute(test_pred_delta, last_val_test_val)
+    # inverse target transform (e.g., expm1) if enabled
+    tt_params = artifacts.get("target_transform")
+    if tt_params:
+        val_true = inverse_transform_array(val_true, tt_params)
+        test_true = inverse_transform_array(test_true, tt_params)
+        val_pred = inverse_transform_array(val_pred, tt_params)
+        test_pred = inverse_transform_array(test_pred, tt_params)
 
     # clean + align
     val_true_u, val_pred_u, _ = clean_and_unify_arrays(val_true, val_pred)
@@ -356,7 +355,9 @@ def train_lstm_model(df: pd.DataFrame, config: dict):
 
     # ---- lightweight residual modeling on flattened windows（提取趋势残差学习波动）----
     rm_cfg = (config.get("residual_modeling") or {})
-    if rm_cfg.get("enabled", False):
+    _rm_type = str(rm_cfg.get("model_type", "")).strip().lower()
+    # When residual learner is XGBoost, residual correction is applied in the pipeline (to avoid double correction).
+    if rm_cfg.get("enabled", False) and _rm_type not in ("xgboost", "xgb"):
         try:
             L_val = min(len(val_true_u), len(val_pred_u), val_X.shape[0])
             if L_val > 0:

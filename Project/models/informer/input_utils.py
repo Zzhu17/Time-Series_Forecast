@@ -57,7 +57,10 @@ def build_main_and_feature_windows(
     X_enc, X_dec, Y, X_feature = [], [], [], []
     for i in range(n - window_size + 1):
         main_seq = values[i : i + seq_len]
-        dec_seq = values[i + seq_len : i + seq_len + label_len + pred_len]
+        # Decoder input: label_len history + pred_len placeholder (0) to avoid target leakage
+        hist_dec = values[i + seq_len : i + seq_len + label_len]
+        fut_dec = np.zeros((pred_len,) + hist_dec.shape[1:], dtype=np.asarray(values).dtype) if pred_len > 0 else np.zeros((0,) + hist_dec.shape[1:], dtype=np.asarray(values).dtype)
+        dec_seq = np.concatenate([hist_dec, fut_dec], axis=0)
         label_seq = values[i + seq_len + label_len : i + seq_len + label_len + pred_len]
         X_enc.append(main_seq)
         X_dec.append(dec_seq)
@@ -127,10 +130,29 @@ def prepare_informer_inputs(
     if missing:
         raise KeyError(f"prepare_informer_inputs: 缺少必要列 {missing}，当前 df_scaled.columns={list(df_scaled.columns)}")
 
-    # --- 2) 取窗口参数并做长度预检（可读错误早抛出） ---
+    # --- 2) 取窗口参数并做长度预检（不足时自动缩短窗口） ---
     seq_len = int(informer_cfg.get('seq_len', 96))
     label_len = int(informer_cfg.get('label_len', 48))
     pred_len = int(informer_cfg.get('pred_len', 24))
+
+    n_rows = int(len(df_scaled))
+
+    # Informer 的滑窗最小样本要求是 seq_len + pred_len（label_len 只要求 <= seq_len）
+    if label_len > seq_len:
+        label_len = seq_len
+        informer_cfg['label_len'] = int(label_len)
+
+    required = seq_len + pred_len
+    if n_rows < required:
+        pred_len_new = max(1, min(pred_len, max(1, int(n_rows * 0.2))))
+        seq_len_new = max(4, n_rows - pred_len_new)
+        if label_len > seq_len_new:
+            label_len = seq_len_new
+        informer_cfg['seq_len'] = seq_len = int(seq_len_new)
+        informer_cfg['label_len'] = label_len = int(label_len)
+        informer_cfg['pred_len'] = pred_len = int(pred_len_new)
+        print(f"[informer] 数据不足自动缩短窗口: seq_len={seq_len}, label_len={label_len}, pred_len={pred_len} (n={n_rows})")
+
     ensure_valid_window_length(df_scaled, seq_len, label_len, pred_len)
 
     # --- 3) 取值矩阵（float32） ---
@@ -154,10 +176,15 @@ def ensure_valid_window_length(arr, seq_len, label_len, pred_len):
         n = len(arr)
     else:
         raise ValueError("arr must be a DataFrame or array-like object")
-    required = seq_len + label_len + pred_len
+    if label_len > seq_len:
+        raise ValueError(
+            f"❌ 窗口参数非法：label_len({label_len}) 不能大于 seq_len({seq_len})。"
+        )
+
+    required = seq_len + pred_len
     if n < required:
         raise ValueError(
-            f"❌ 样本数不足，当前{n}，需要至少{required}（窗口参数：seq_len={seq_len}, label_len={label_len}, pred_len={pred_len}）。"
+            f"❌ 样本数不足，当前{n}，需要至少{required}（窗口参数：seq_len={seq_len}, pred_len={pred_len}；且要求 label_len<=seq_len，当前 label_len={label_len}）。"
         )
 
 

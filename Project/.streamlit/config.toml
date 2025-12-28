@@ -1,0 +1,10 @@
+[server]
+# Training writes artifacts (model checkpoints, residual_model.pkl, etc.) which can trigger Streamlit's
+# file-watcher reruns and interrupt the UI right after training finishes.
+fileWatcherType = "none"
+runOnSave = false
+
+[runner]
+# Avoid showing exceptions as a blank screen
+fastReruns = false
+

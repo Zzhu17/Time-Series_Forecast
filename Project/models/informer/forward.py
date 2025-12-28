@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import numpy as np
 import torch
 
@@ -100,16 +102,23 @@ def informer_forward(
     device, dtype = _infer_device_dtype(model, device, dtype)
 
     if return_numpy:
-        # 2) Normalize inputs as numpy, then convert to tensors
-        np_dtype = _np_dtype_from_torch(dtype)
-        x_enc_np = _ensure_numpy_3d(x_enc, np_dtype)
-        x_dec_np = _ensure_numpy_3d(x_dec, np_dtype)
-        if debug:
-            debug_stat("x_enc", x_enc_np)
-            debug_stat("x_dec", x_dec_np)
-
-        x_enc_t = _ensure_tensor_3d(x_enc_np, device, dtype)
-        x_dec_t = _ensure_tensor_3d(x_dec_np, device, dtype)
+        # 2) Normalize inputs; accept numpy OR torch tensors (including MPS)
+        if isinstance(x_enc, torch.Tensor) or isinstance(x_dec, torch.Tensor):
+            # Do NOT route through numpy; MPS tensors cannot be converted via .numpy()
+            x_enc_t = _ensure_tensor_3d(x_enc, device, dtype)
+            x_dec_t = _ensure_tensor_3d(x_dec, device, dtype)
+            if debug:
+                debug_stat("x_enc_tensor", x_enc_t)
+                debug_stat("x_dec_tensor", x_dec_t)
+        else:
+            np_dtype = _np_dtype_from_torch(dtype)
+            x_enc_np = _ensure_numpy_3d(x_enc, np_dtype)
+            x_dec_np = _ensure_numpy_3d(x_dec, np_dtype)
+            if debug:
+                debug_stat("x_enc", x_enc_np)
+                debug_stat("x_dec", x_dec_np)
+            x_enc_t = _ensure_tensor_3d(x_enc_np, device, dtype)
+            x_dec_t = _ensure_tensor_3d(x_dec_np, device, dtype)
         if debug:
             debug_stat("x_enc_tensor", x_enc_t)
             debug_stat("x_dec_tensor", x_dec_t)

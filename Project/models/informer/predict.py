@@ -1,11 +1,15 @@
 import torch
+from utils.device_utils import get_device_from_config
 import numpy as np
 import pandas as pd
 import joblib
 import os
-from typing import Dict, Any, Tuple, Optional, Callable, cast
+from typing import Dict, Any, Tuple, Optional, Callable, cast, List
 from models.informer.forward import informer_forward
 from models.informer.input_utils import prepare_informer_inputs, make_informer_loader
+from utils.target_transform import inverse_transform_array
+from utils.feature_selection import load_feature_contract
+from utils.feature_contract import align_df_to_feature_contract
 
 # === Helpers: ensure timestep features (W, L, F) and robust inverse of target columns ===
 
@@ -71,6 +75,10 @@ def _inverse_transform_targets(arr2d: np.ndarray, scaler, config) -> np.ndarray:
             tmp[:, j] = arr2d[:, j]
         inv = scaler.inverse_transform(tmp)
         out = inv[:, :k]
+    # Optional: inverse target transform (log1p) after inverse scaling
+    tt_params = (config.get("artifacts") or {}).get("target_transform")
+    if tt_params:
+        out = inverse_transform_array(out, tt_params)
     return out
 
 # 1. 导入所有必需的模块
@@ -96,7 +104,7 @@ class InformerPredictor:
         """
         print("--- Initializing InformerPredictor ---")
         self.config = config
-        self.device = torch.device(config.get('device', 'cpu'))
+        self.device = get_device_from_config(config)
 
         # === Sync feature_cols/target_idx with training artifacts ===
         artifacts_cfg = config.get('artifacts', {})
@@ -105,9 +113,20 @@ class InformerPredictor:
         time_col  = default_cfg.get('time_col', 'date')
         value_col = default_cfg.get('value_col', 'value')
 
-        feature_cols = artifacts_cfg.get('feature_cols') or informer_cfg.get('feature_cols') or [value_col]
+        # --- Load frozen feature contract (preferred) ---
+        self.feature_contract = None
+        feat_path = artifacts_cfg.get("feature_cols_path")
+        if feat_path and os.path.isfile(str(feat_path)):
+            self.feature_contract = load_feature_contract(str(feat_path))
+
+        feature_cols = (
+            (self.feature_contract or {}).get("feature_cols")
+            or artifacts_cfg.get('feature_cols')
+            or informer_cfg.get('feature_cols')
+            or [value_col]
+        )
         # keep value_col at index 0 and drop time_col if present
-        feature_cols = [value_col] + [c for c in feature_cols if c != value_col and c != time_col]
+        feature_cols = [value_col] + [c for c in list(feature_cols) if c != value_col and c != time_col]
         self.feature_cols = feature_cols
         self.target_idx = int(artifacts_cfg.get('target_idx', 0))
 
@@ -201,7 +220,99 @@ class InformerPredictor:
             raise ValueError(f"Input data length ({len(df)}) is less than the required sequence length ({seq_len}).")
 
         # --- 1. 特征工程 ---
-        df_featured, _time_feats = generate_features(df, self.config)
+        df_featured, _time_feats = generate_features(df, self.config, manage_feature_cols=False)
+        # --- 1.5 特征契约：Required/Repairable/Optional（缺列不静默补0） ---
+        def _degrade_enabled() -> bool:
+            try:
+                return bool(((self.config.get("prediction") or {}).get("degrade") or {}).get("enabled", False))
+            except Exception:
+                return False
+
+        def _required_core_cols() -> List[str]:
+            vcol = (self.config.get("default", {}) or {}).get("value_col", "value")
+            cols: List[str] = [str(vcol)]
+            contract = self.feature_contract if isinstance(self.feature_contract, dict) else {}
+            inf = (self.config.get("model_config", {}) or {}).get("Informer", {}) or {}
+            fs = dict(inf.get("feature_selection") or {})
+            extra = []
+            for k in ("required_core_cols", "core_cols"):
+                extra += list(contract.get(k) or [])
+                extra += list(fs.get(k) or [])
+            for c in extra:
+                if c and c not in cols:
+                    cols.append(str(c))
+            # Only enforce required cores that are part of the trained feature space
+            cols = [c for c in cols if c in self.feature_cols]
+            return cols
+
+        def _missing_required_in_tail(df_in: pd.DataFrame, tail_rows: int) -> List[str]:
+            missing: List[str] = []
+            req = _required_core_cols()
+            if not req:
+                return missing
+            tail = df_in.tail(int(max(1, tail_rows)))
+            for c in req:
+                if c not in tail.columns:
+                    missing.append(c)
+                    continue
+                s = pd.to_numeric(tail[c], errors="coerce")
+                if bool(s.isna().any()):
+                    missing.append(c)
+            return sorted(set(missing))
+
+        def _naive_last(pred_len: int) -> np.ndarray:
+            vcol = (self.config.get("default", {}) or {}).get("value_col", "value")
+            last = pd.to_numeric(df.get(vcol), errors="coerce").dropna().iloc[-1]
+            return np.full(int(pred_len), float(last), dtype=float)
+
+        # Fast required-core guardrail (so we can show exact missing feature list in UI)
+        _seq = int(self.config["model_config"]["Informer"].get("seq_len", 1))
+        _pred = int(self.config["model_config"]["Informer"].get("pred_len", 1))
+        missing_req = _missing_required_in_tail(df_featured, tail_rows=max(1, _seq + _pred))
+        if missing_req:
+            if _degrade_enabled():
+                blk = self.config.setdefault("data", {})
+                blk["degraded"] = True
+                blk["degraded_mode"] = "naive_last"
+                blk["degraded_reason"] = "required_core_missing"
+                blk["missing_required_core"] = missing_req
+                pred_len = int(self.config["model_config"]["Informer"].get("pred_len", 1))
+                return _naive_last(pred_len)
+            raise KeyError(f"Missing required core features at predict-time: {missing_req}")
+
+        try:
+            df_featured, _contract_rep, usable_cols = align_df_to_feature_contract(
+                df_featured,
+                time_col=(self.config.get("default", {}) or {}).get("time_col", "date"),
+                value_col=(self.config.get("default", {}) or {}).get("value_col", "value"),
+                feature_cols=self.feature_cols,
+                contract=self.feature_contract,
+                recompute_policy="error",
+                tail_rows=max(1, _seq + _pred),
+            )
+        except Exception as e:
+            # Required core missing: only degrade if user explicitly enables it; repairable failures remain hard errors.
+            if isinstance(e, KeyError) and _degrade_enabled():
+                blk = self.config.setdefault("data", {})
+                blk["degraded"] = True
+                blk["degraded_mode"] = "naive_last"
+                blk["degraded_reason"] = "required_core_missing"
+                blk["degraded_error"] = str(e)
+                pred_len = int(self.config["model_config"]["Informer"].get("pred_len", 1))
+                return _naive_last(pred_len)
+            raise
+
+        # If optional columns were dropped, main model feature dims won't match -> degrade or error
+        if usable_cols != self.feature_cols:
+            # Optional features: auto-remove and continue via baseline; always mark degraded.
+            blk = self.config.setdefault("data", {})
+            blk["degraded"] = True
+            blk["degraded_mode"] = "naive_last"
+            blk["degraded_reason"] = "optional_features_dropped"
+            blk["dropped_optional_features"] = sorted(set(self.feature_cols) - set(usable_cols))
+            blk["feature_contract_report"] = _contract_rep
+            pred_len = int(self.config["model_config"]["Informer"].get("pred_len", 1))
+            return _naive_last(pred_len)
 
         # --- 2. 数据归一化 (与训练一致，优先使用传入的 scaler 对特征列做变换) ---
         informer_cfg = self.config['model_config']['Informer']
@@ -289,7 +400,97 @@ class InformerPredictor:
             raise ValueError(f"Input length {len(df)} < seq_len {seq_len}")
 
         # --- 1) 特征工程（与训练一致） ---
-        df_featured, _ = generate_features(df, cfg)
+        df_featured, _ = generate_features(df, cfg, manage_feature_cols=False)
+        def _degrade_enabled() -> bool:
+            try:
+                return bool(((cfg.get("prediction") or {}).get("degrade") or {}).get("enabled", False))
+            except Exception:
+                return False
+        def _required_core_cols() -> List[str]:
+            vcol = (cfg.get("default", {}) or {}).get("value_col", "value")
+            cols: List[str] = [str(vcol)]
+            contract = self.feature_contract if isinstance(self.feature_contract, dict) else {}
+            inf = (cfg.get("model_config", {}) or {}).get("Informer", {}) or {}
+            fs = dict(inf.get("feature_selection") or {})
+            extra = []
+            for k in ("required_core_cols", "core_cols"):
+                extra += list(contract.get(k) or [])
+                extra += list(fs.get(k) or [])
+            for c in extra:
+                if c and c not in cols:
+                    cols.append(str(c))
+            cols = [c for c in cols if c in self.feature_cols]
+            return cols
+        def _missing_required_in_tail(df_in: pd.DataFrame, tail_rows: int) -> List[str]:
+            missing: List[str] = []
+            req = _required_core_cols()
+            if not req:
+                return missing
+            tail = df_in.tail(int(max(1, tail_rows)))
+            for c in req:
+                if c not in tail.columns:
+                    missing.append(c)
+                    continue
+                s = pd.to_numeric(tail[c], errors="coerce")
+                if bool(s.isna().any()):
+                    missing.append(c)
+            return sorted(set(missing))
+
+        # Pre-check required core for better diagnostics / degrade hook
+        _seq = int(informer_base.get("seq_len", 1))
+        _lab = int(informer_base.get("label_len", 0) or 0)
+        missing_req = _missing_required_in_tail(df_featured, tail_rows=max(1, _seq + _lab + int(pred_len)))
+        if missing_req:
+            if _degrade_enabled():
+                blk = cfg.setdefault("data", {})
+                blk["degraded"] = True
+                blk["degraded_mode"] = "naive_persistence"
+                blk["degraded_reason"] = "required_core_missing"
+                blk["missing_required_core"] = missing_req
+                vcol = (cfg.get("default", {}) or {}).get("value_col", "value")
+                y = pd.to_numeric(df.get(vcol), errors="coerce")
+                merged = np.full(len(df), np.nan, dtype=float)
+                if len(y) > 1:
+                    merged[1:] = y.shift(1).to_numpy(dtype=float)[1:]
+                return merged
+            raise KeyError(f"Missing required core features at predict-time: {missing_req}")
+        try:
+            df_featured, _contract_rep, usable_cols = align_df_to_feature_contract(
+                df_featured,
+                time_col=(cfg.get("default", {}) or {}).get("time_col", "date"),
+                value_col=(cfg.get("default", {}) or {}).get("value_col", "value"),
+                feature_cols=self.feature_cols,
+                contract=self.feature_contract,
+                recompute_policy="error",
+                tail_rows=max(1, _seq + _lab + int(pred_len)),
+            )
+        except Exception as e:
+            if isinstance(e, KeyError) and _degrade_enabled():
+                blk = cfg.setdefault("data", {})
+                blk["degraded"] = True
+                blk["degraded_mode"] = "naive_persistence"
+                blk["degraded_reason"] = "required_core_missing"
+                blk["degraded_error"] = str(e)
+                vcol = (cfg.get("default", {}) or {}).get("value_col", "value")
+                y = pd.to_numeric(df.get(vcol), errors="coerce")
+                merged = np.full(len(df), np.nan, dtype=float)
+                if len(y) > 1:
+                    merged[1:] = y.shift(1).to_numpy(dtype=float)[1:]
+                return merged
+            raise
+        if usable_cols != self.feature_cols:
+            blk = cfg.setdefault("data", {})
+            blk["degraded"] = True
+            blk["degraded_mode"] = "naive_persistence"
+            blk["degraded_reason"] = "optional_features_dropped"
+            blk["dropped_optional_features"] = sorted(set(self.feature_cols) - set(usable_cols))
+            blk["feature_contract_report"] = _contract_rep
+            vcol = (cfg.get("default", {}) or {}).get("value_col", "value")
+            y = pd.to_numeric(df.get(vcol), errors="coerce")
+            merged = np.full(len(df), np.nan, dtype=float)
+            if len(y) > 1:
+                merged[1:] = y.shift(1).to_numpy(dtype=float)[1:]
+            return merged
 
         # --- 2) 缩放（按训练特征列 & scaler） ---
         feature_cols = self.feature_cols
@@ -408,6 +609,7 @@ class InformerPredictor:
 # === Utility: rolling prediction on a pre-scaled segment (strict-mean merge, optional calibration) ===
 # 1) 修改签名：默认值改为 {}
 from typing import Dict, Any, Optional
+from utils.target_transform import inverse_transform_array
 
 def _inverse_targets(arr2d: np.ndarray, scaler, config: Dict[str, Any]) -> np.ndarray:
     arr2d = np.asarray(arr2d, dtype=np.float32)
@@ -445,6 +647,10 @@ def _inverse_targets(arr2d: np.ndarray, scaler, config: Dict[str, Any]) -> np.nd
     out = np.zeros_like(arr2d)
     for j, k in enumerate(used):
         out[:, j] = inv[:, k]
+    # Optional: inverse target transform (log1p) after inverse scaling
+    tt_params = (config.get("artifacts") or {}).get("target_transform")
+    if tt_params:
+        out = inverse_transform_array(out, tt_params)
     return out
 
 
@@ -497,7 +703,7 @@ def rolling_predict_segment(
             bxd = torch.as_tensor(batch_x_dec, dtype=torch.float32, device=device).contiguous()
             out = informer_forward(model, bxe, bxd, device=device, return_numpy=True)
             preds_scaled.append(out[:, -pred_len:, :])           # 只取最后 pred_len
-            y_true_scaled_batches.append(batch_y[:, -pred_len:, :])
+            y_true_scaled_batches.append(tensor_to_numpy(batch_y[:, -pred_len:, :]))
 
     if len(preds_scaled) == 0:
         # 空 df 兜底
@@ -537,11 +743,8 @@ def rolling_predict_segment(
             C = int(preds_inv.shape[-1])
             try:
                 yhat_inv_3d = preds_inv.reshape(n_window, int(pred_len), C)
-                # align x_feature to tail pred_len if available
-                if x_feature is not None and getattr(x_feature, 'ndim', 0) == 3:
-                    x_feature_3d = x_feature[:, -int(pred_len):, :]
-                else:
-                    x_feature_3d = None
+                # make sure x_feature is timestep-level (W, pred_len, F)
+                x_feature_3d = _ensure_timestep_features(x_feature, int(pred_len))
                 yhat_corr_3d = apply_residual(yhat_inv_3d, x_feature_3d, residual_model)
                 # flatten back for downstream merging
                 preds_inv = np.asarray(yhat_corr_3d, dtype=np.float32).reshape(-1, C)

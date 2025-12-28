@@ -16,7 +16,12 @@ def to_numpy_safe(x):
     return np.asarray(x)
 
 import numpy as np
-from sklearn.metrics import mean_absolute_percentage_error, mean_squared_error
+
+# sklearn is optional; keep metrics working without it.
+try:
+    from sklearn.metrics import mean_squared_error as _sk_mse  # type: ignore
+except Exception:
+    _sk_mse = None
 
 def unify_length_and_flatten(y_true, y_pred):
     """
@@ -35,8 +40,14 @@ def get_metrics(y_true, y_pred):
     y_pred = to_numpy_safe_force_float(y_pred)
     y_true, y_pred = unify_length_and_flatten(y_true, y_pred)
     assert len(y_true) == len(y_pred), f"❌ y_true ({len(y_true)}) ≠ y_pred ({len(y_pred)}). 检查模型输出与目标维度是否一致"
-    mape = mean_absolute_percentage_error(y_true, y_pred)
-    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+    eps = 1e-8
+    denom = np.maximum(np.abs(y_true), eps)
+    mape = float(np.mean(np.abs(y_true - y_pred) / denom))
+    if _sk_mse is not None:
+        rmse = float(np.sqrt(_sk_mse(y_true, y_pred)))
+    else:
+        diff = (y_true - y_pred).astype(float)
+        rmse = float(np.sqrt(np.mean(diff * diff)))
     return mape, rmse
 
 
@@ -49,7 +60,10 @@ def compute_rmse(y_true, y_pred):
     y_true = to_numpy_safe_force_float(y_true)
     y_pred = to_numpy_safe_force_float(y_pred)
     y_true, y_pred = unify_length_and_flatten(y_true, y_pred)
-    return np.sqrt(mean_squared_error(y_true, y_pred))
+    if _sk_mse is not None:
+        return float(np.sqrt(_sk_mse(y_true, y_pred)))
+    diff = (y_true - y_pred).astype(float)
+    return float(np.sqrt(np.mean(diff * diff)))
 
 
 def compute_mape(y_true, y_pred, eps: float = 1e-8, masked: bool = True) -> float:

@@ -41,7 +41,7 @@ class lstm_model(nn.Module):
 
 if __name__ == "__main__":
     # Step 5: Device check and summary
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("mps") if getattr(torch.backends, 'mps', None) is not None and torch.backends.mps.is_built() and torch.backends.mps.is_available() else (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
     print(f"Using device: {device}")
 
     model = lstm_model(input_size=5, hidden_size=64, dropout=0.1, num_layers=2).to(device)

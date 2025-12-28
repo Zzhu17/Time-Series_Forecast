@@ -115,8 +115,8 @@ class ProbAttention(nn.Module):
         K_expand = K.unsqueeze(-3).expand(B, H, L_Q, L_K, self.d_k)
         
         # 随机选择 sample_k 个 key 的索引
-        index_sample = torch.randint(L_K, (L_Q, sample_k)) 
-        K_sample = K_expand[:, :, torch.arange(L_Q).unsqueeze(1), index_sample, :]
+        index_sample = torch.randint(L_K, (L_Q, sample_k), device=K.device) 
+        K_sample = K_expand[:, :, torch.arange(L_Q, device=K.device).unsqueeze(1), index_sample, :]
         
         # 2. 计算采样后的 QK 得分
         Q_reshaped = Q.unsqueeze(-2)
@@ -131,8 +131,8 @@ class ProbAttention(nn.Module):
 
         # 5. 使用选出的Query的索引，来获取它们对应的原始K
         # 创建一个 (B, H, n_top, D) 的 Q_reduce 张量
-        Q_reduce = Q[torch.arange(B)[:, None, None],
-                     torch.arange(H)[None, :, None],
+        Q_reduce = Q[torch.arange(B, device=Q.device)[:, None, None],
+                     torch.arange(H, device=Q.device)[None, :, None],
                      top_indices, :]
         
         # 6. 计算 Q_reduce 和所有 K 的注意力分数
@@ -162,8 +162,10 @@ class ProbAttention(nn.Module):
         else:
             scores_top, index = self._prob_QK(queries, keys, sample_k=U_part, n_top=m_top)
             # 使用稀疏分数更新原始分数矩阵
-            scores = torch.zeros(B, H, L_Q, L_K).to(queries.device)
-            scores.scatter_(-1, index.unsqueeze(-1).expand(-1, -1, -1, L_K), scores_top)
+            # `index` 是 top query 的位置（范围 [0, L_Q)），应当在 query 维度写回稀疏分数；
+            # 之前沿 key 维 scatter 会导致 index 越界（如 index=34 但 L_K=32）。
+            scores = torch.zeros(B, H, L_Q, L_K, device=queries.device, dtype=scores_top.dtype)
+            scores.scatter_(-2, index.unsqueeze(-1).expand(-1, -1, -1, L_K), scores_top)
 
         if mask is not None:
             scores = scores.masked_fill(mask == 0, -1e9)

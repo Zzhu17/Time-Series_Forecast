@@ -14,6 +14,11 @@ from models.informer.forward import informer_forward
 from models.informer.input_utils import prepare_informer_inputs, make_informer_loader
 from utils.array_utils import assert_no_nan, safe_to_numpy
 from utils.residual_modeling import train_and_predict_residual, apply_residual
+from utils.target_transform import inverse_transform_array
+from utils.feature_selection import select_features_train_only, save_feature_contract
+from preprocessing.feature_engineering import generate_features as generate_calendar_features
+from utils.target_transform import fit_target_transform, transform_df_target
+from utils.device_utils import get_device_from_config
 
 log = logging.getLogger('test')
 
@@ -104,6 +109,11 @@ def _inverse_transform_targets(arr2d: np.ndarray, scaler, config: Dict[str, Any]
     out = np.zeros_like(arr2d)
     for j, idx in enumerate(used_indices):
         out[:, j] = inv[:, idx]
+
+    # Optional: inverse target transform (log1p) after inverse scaling
+    tt_params = (config.get("artifacts") or {}).get("target_transform")
+    if tt_params:
+        out = inverse_transform_array(out, tt_params)
     return out
 
 # === Helper: ensure x_feature is time-step level (W, L, F) ===
@@ -160,7 +170,6 @@ def _dense_predict_last_k(
     config: Dict[str, Any],
     feature_cols: list,
     scaler,
-    residual_model=None,
 ) -> pd.DataFrame:
     """
     以 horizon=1, step=1 做整段“密集滚动”预测，并取序列最后 k_last 个点作为输出。
@@ -190,6 +199,7 @@ def _dense_predict_last_k(
         step=1,
         mode="overwrite",
         calib=None,
+        config=config,
     )
     if not isinstance(full_df, _pd.DataFrame) or full_df.empty:
         return _pd.DataFrame(columns=[time_col, 'y_true', 'yhat']).set_index(time_col)
@@ -202,18 +212,6 @@ def _dense_predict_last_k(
     if time_col not in df_out.index.names and time_col in df_out.columns:
         df_out = df_out.set_index(_pd.to_datetime(df_out[time_col]))
     df_out.index.name = time_col
-
-    # --- Optional: apply residual correction on dense outputs ---
-    if residual_model is not None and 'yhat' in df_out.columns:
-        try:
-            # reshape to (N, 1, 1) to be compatible with residual apply API
-            yhat_3d = df_out['yhat'].astype(float).to_numpy().reshape(-1, 1, 1)
-            # we don't have timestep features here; pass None (model should handle it)
-            yhat_corr_3d = apply_residual(yhat_3d, None, residual_model)
-            if yhat_corr_3d is not None:
-                df_out['yhat'] = np.asarray(yhat_corr_3d).reshape(-1)
-        except Exception as e:
-            print(f"[Residual] apply_residual failed in dense mode: {e}; using base predictions.")
 
     return df_out
 
@@ -322,35 +320,194 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
 
     informer_cfg = config['model_config']['Informer']
     artifacts_cfg = config['artifacts']
-    device = torch.device(config.get('device', 'cpu'))
-    
-    train_df_sc = config['data']['train_df_sc']
-    val_df_sc = config['data']['val_df_sc']
-    scaler = config['artifacts']['scaler'] # scaler 从 pipeline 传入
+    device = get_device_from_config(config)
+
+    # --- 0) Ensure we have scaled train/val/test in config (platform-level robustness) ---
+    data_blk = config.setdefault("data", {})
+    artifacts_cfg = config.setdefault("artifacts", artifacts_cfg)
+
+    def _ensure_scaled_splits():
+        train_df_sc = data_blk.get("train_df_sc")
+        val_df_sc = data_blk.get("val_df_sc")
+        test_df_sc = data_blk.get("test_df_sc")
+        scaler = artifacts_cfg.get("scaler")
+        if isinstance(train_df_sc, pd.DataFrame) and isinstance(val_df_sc, pd.DataFrame) and scaler is not None:
+            return
+
+        # Pull raw df from config
+        raw_df = None
+        for cand in (
+            data_blk.get("dataframe"),
+            config.get("dataframe"),
+            data_blk.get("df"),
+            data_blk.get("data"),
+        ):
+            if isinstance(cand, pd.DataFrame):
+                raw_df = cand
+                break
+        if not isinstance(raw_df, pd.DataFrame) or raw_df.empty:
+            raise KeyError("Informer requires pre-split scaled data under config['data'] or a raw DataFrame under config['data']['dataframe'].")
+
+        default_cfg = config.get("default", {}) or {}
+        time_col = default_cfg.get("time_col", "date")
+        value_col = default_cfg.get("value_col", "value")
+
+        df2 = raw_df.copy()
+        if time_col in df2.columns:
+            df2[time_col] = pd.to_datetime(df2[time_col], errors="coerce", utc=True)
+            try:
+                df2[time_col] = df2[time_col].dt.tz_localize(None)
+            except Exception:
+                pass
+            df2 = df2.sort_values(time_col)
+
+        # Safe calendar features (does not manage feature_cols here)
+        try:
+            df2, _ = generate_calendar_features(df2, config, manage_feature_cols=False)
+        except Exception:
+            pass
+
+        # Candidate discovery (unified across models):
+        # Prefer app/pipeline-provided candidates under config['data']['all_feature_cols'].
+        # Fall back to numeric columns if not provided.
+        candidate_cols = []
+        try:
+            provided = data_blk.get("all_feature_cols")
+            if isinstance(provided, (list, tuple)) and len(provided) > 0:
+                candidate_cols = [str(c) for c in provided if c and str(c) != time_col]
+        except Exception:
+            candidate_cols = []
+        if not candidate_cols:
+            numeric_cols = [c for c in df2.select_dtypes(include="number").columns if c != time_col]
+            candidate_cols = [value_col] + [c for c in numeric_cols if c != value_col]
+        else:
+            candidate_cols = [value_col] + [c for c in candidate_cols if c != value_col and c != time_col]
+            # Ensure safe calendar features are considered (matches missing-policy defaults)
+            for c in ["month", "day_of_month", "day_of_week", "hour", "day_of_year"]:
+                if c in df2.columns and c not in candidate_cols:
+                    candidate_cols.append(c)
+
+        # === Tiered missing-feature policy (Train strict) on full DF BEFORE split ===
+        from utils.feature_missing_policy import prepare_df_train_strict as _prepare_missing
+        df2, base_feat_cols, _tiers, miss_report = _prepare_missing(
+            df2,
+            time_col=time_col,
+            value_col=value_col,
+            candidate_cols=candidate_cols,
+            config=config,
+        )
+        artifacts_cfg["feature_missing_report"] = miss_report
+
+        n = len(df2)
+        n_train = int(n * 0.6)
+        n_val = int(n * 0.2)
+        train_df = df2.iloc[:n_train].copy()
+        val_df = df2.iloc[n_train : n_train + n_val].copy()
+        test_df = df2.iloc[n_train + n_val :].copy()
+
+        # Optional: target transform before scaling
+        tt_cfg = (config.get("target_transform") or {})
+        if bool(tt_cfg.get("enabled", False)):
+            try:
+                params = fit_target_transform(train_df[value_col].to_numpy(), method=str(tt_cfg.get("method", "log1p")))
+                artifacts_cfg["target_transform"] = params
+                artifacts_cfg["target_transform_applied"] = True
+                train_df = transform_df_target(train_df, value_col, params)
+                val_df = transform_df_target(val_df, value_col, params)
+                test_df = transform_df_target(test_df, value_col, params)
+            except Exception:
+                artifacts_cfg["target_transform"] = None
+
+        # Train-only feature selection (MI + RF importance)
+        feat_cols = [c for c in base_feat_cols if c in df2.columns]
+        contract = None
+        try:
+            feat_cols, contract = select_features_train_only(
+                train_df,
+                time_col=time_col,
+                value_col=value_col,
+                candidate_cols=feat_cols,
+                config=config,
+            )
+            feat_path = str(artifacts_cfg.get("feature_cols_path", "artifacts/feature_cols.json"))
+            try:
+                try:
+                    contract.selection_report.setdefault("missing_policy", miss_report)
+                except Exception:
+                    pass
+                save_feature_contract(feat_path, contract)
+            except Exception:
+                pass
+            artifacts_cfg["feature_cols"] = list(feat_cols)
+            artifacts_cfg["target_idx"] = 0
+        except Exception:
+            feat_cols = [c for c in feat_cols if c in df2.columns]
+        # Strict: selected features must exist and contain no NaN after missing-policy
+        for c in feat_cols:
+            if c not in train_df.columns:
+                raise KeyError(f"Selected feature missing after missing-policy: {c}")
+            if train_df[c].isna().any() or val_df[c].isna().any() or test_df[c].isna().any():
+                raise ValueError(f"Selected feature contains NaN after missing-policy (should not happen): {c}")
+
+        # Fit scaler on train only
+        try:
+            from sklearn.preprocessing import StandardScaler
+        except Exception:
+            class StandardScaler:  # type: ignore
+                def fit(self, X):
+                    X = np.asarray(X, dtype=np.float32)
+                    self.mean_ = X.mean(axis=0)
+                    self.scale_ = X.std(axis=0)
+                    self.scale_[self.scale_ == 0] = 1.0
+                    self.n_features_in_ = X.shape[1]
+                    return self
+                def transform(self, X):
+                    X = np.asarray(X, dtype=np.float32)
+                    return (X - self.mean_) / self.scale_
+                def inverse_transform(self, X):
+                    X = np.asarray(X, dtype=np.float32)
+                    return X * self.scale_ + self.mean_
+
+        scaler_local = StandardScaler()
+        scaler_local.fit(train_df[feat_cols].astype(np.float32))
+
+        def _tf(part: pd.DataFrame) -> pd.DataFrame:
+            out = part.copy()
+            out[feat_cols] = scaler_local.transform(part[feat_cols].astype(np.float32))
+            return out
+
+        data_blk["train_df_sc"] = _tf(train_df)
+        data_blk["val_df_sc"] = _tf(val_df)
+        data_blk["test_df_sc"] = _tf(test_df)
+        data_blk["split"] = {"train_len": int(len(train_df)), "val_len": int(len(val_df)), "test_len": int(len(test_df))}
+        data_blk["all_feature_cols"] = list(feat_cols)
+        artifacts_cfg["scaler"] = scaler_local
+
+    _ensure_scaled_splits()
+
+    train_df_sc = data_blk["train_df_sc"]
+    val_df_sc = data_blk["val_df_sc"]
+    scaler = artifacts_cfg["scaler"]  # scaler from pipeline/app or prepared above
 
     # === Resolve feature columns (auto single/multi-var) and fix target index ===
     default_cfg = config.get('default', {})
     time_col  = default_cfg.get('time_col', 'date')
     value_col = default_cfg.get('value_col', 'value')
 
-    feature_cols = list(informer_cfg.get('feature_cols') or [])
+    # Prefer pre-resolved feature list injected by pipeline/app (train-only selected & frozen)
+    feature_cols = list((config.get('data', {}) or {}).get('all_feature_cols') or informer_cfg.get('feature_cols') or [])
     if not feature_cols:
         numeric_cols = val_df_sc.select_dtypes(include=[np.number]).columns.tolist()
         if time_col in numeric_cols:
             numeric_cols.remove(time_col)
         feature_cols = [value_col] + [c for c in numeric_cols if c != value_col]
-        informer_cfg['feature_cols'] = feature_cols
+    # enforce target first and drop time_col if present
+    feature_cols = [value_col] + [c for c in feature_cols if c != value_col and c != time_col]
+    informer_cfg['feature_cols'] = feature_cols
 
-    lock_order = bool(informer_cfg.get('lock_feature_order', True))
     missing = [c for c in feature_cols if c not in val_df_sc.columns]
-    if missing and lock_order:
-        raise KeyError(f"Informer.feature_cols missing in validation DataFrame: {missing}")
-    if missing and not lock_order:
-        for m in missing:
-            val_df_sc[m] = 0.0
-            train_df_sc[m] = 0.0
-            if config.get('data', {}).get('test_df_sc') is not None:
-                config['data']['test_df_sc'][m] = 0.0
+    if missing:
+        raise KeyError(f"Informer.feature_cols missing in validation DataFrame: {missing} (no silent fill)")
 
     config.setdefault('data', {})['all_feature_cols'] = feature_cols
     config.setdefault('artifacts', {})['feature_cols'] = feature_cols
@@ -376,9 +533,106 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
     rolling_snapshot["calibrate"] = calibrate_enabled
     config.setdefault('data', {})['rolling_snapshot'] = rolling_snapshot
 
+    # --- 2.0 窗口参数与数据长度对齐（同时适配 train/val，避免两次 prepare 时参数不一致） ---
+    try:
+        seq_len = int(informer_cfg.get('seq_len', 96))
+        label_len = int(informer_cfg.get('label_len', 48))
+        pred_len = int(informer_cfg.get('pred_len', 24))
+        if label_len > seq_len:
+            label_len = seq_len
+        n_min = int(min(len(train_df_sc), len(val_df_sc)))
+        required = seq_len + pred_len
+        if n_min < required:
+            pred_len_new = max(1, min(pred_len, max(1, int(n_min * 0.2))))
+            seq_len_new = max(4, n_min - pred_len_new)
+            label_len_new = min(label_len, seq_len_new)
+            informer_cfg['seq_len'] = int(seq_len_new)
+            informer_cfg['label_len'] = int(label_len_new)
+            informer_cfg['pred_len'] = int(pred_len_new)
+            print(f"[informer] train/val 数据不足自动缩短窗口: seq_len={seq_len_new}, label_len={label_len_new}, pred_len={pred_len_new} (train={len(train_df_sc)}, val={len(val_df_sc)})")
+    except Exception as _e:
+        print(f"[informer] window auto-adjust skipped: {_e}")
+
+    # --- Baseline RMSE (noise floor reference) ---
+    # Compute on original scale using inverse scaler (+ inverse target transform if configured).
+    try:
+        test_df_sc = data_blk.get("test_df_sc")
+        n_train = int(len(train_df_sc)) if isinstance(train_df_sc, pd.DataFrame) else 0
+        n_val = int(len(val_df_sc)) if isinstance(val_df_sc, pd.DataFrame) else 0
+        n_test = int(len(test_df_sc)) if isinstance(test_df_sc, pd.DataFrame) else 0
+
+        if n_train > 0 and n_val > 0 and n_test > 0 and value_col in train_df_sc.columns:
+            y_scaled = np.concatenate(
+                [
+                    pd.to_numeric(train_df_sc[value_col], errors="coerce").to_numpy(dtype=np.float32),
+                    pd.to_numeric(val_df_sc[value_col], errors="coerce").to_numpy(dtype=np.float32),
+                    pd.to_numeric(test_df_sc[value_col], errors="coerce").to_numpy(dtype=np.float32),
+                ],
+                axis=0,
+            )
+            y_all = _inverse_transform_targets(y_scaled.reshape(-1, 1), scaler, config).reshape(-1)
+
+            def _rmse(y_true, y_pred) -> float:
+                y_true = np.asarray(y_true, dtype=float)
+                y_pred = np.asarray(y_pred, dtype=float)
+                m = np.isfinite(y_true) & np.isfinite(y_pred)
+                if int(m.sum()) == 0:
+                    return float("nan")
+                d = y_pred[m] - y_true[m]
+                return float(np.sqrt(np.mean(d * d)))
+
+            def _ema_naive(y, alpha: float = 0.3) -> np.ndarray:
+                s = pd.Series(np.asarray(y, dtype=float))
+                return s.ewm(alpha=float(alpha), adjust=False).mean().shift(1).to_numpy()
+
+            y_series = pd.Series(y_all)
+            naive_last = y_series.shift(1).to_numpy()
+            seasonal_24 = y_series.shift(24).to_numpy()
+            ema_naive = _ema_naive(y_all, alpha=float((config.get("baseline") or {}).get("ema_alpha", 0.3)))
+
+            val_sl = slice(n_train, n_train + n_val)
+            test_sl = slice(n_train + n_val, n_train + n_val + n_test)
+
+            print(f"[split] train={n_train}, val={n_val}, test={n_test} (total={n_train+n_val+n_test})")
+            print("[baseline][val ] naive_last RMSE:", _rmse(y_all[val_sl], naive_last[val_sl]))
+            print("[baseline][val ] y(t-24)   RMSE:", _rmse(y_all[val_sl], seasonal_24[val_sl]))
+            print("[baseline][val ] EMA-naive RMSE:", _rmse(y_all[val_sl], ema_naive[val_sl]))
+            print("[baseline][test] naive_last RMSE:", _rmse(y_all[test_sl], naive_last[test_sl]))
+            print("[baseline][test] y(t-24)   RMSE:", _rmse(y_all[test_sl], seasonal_24[test_sl]))
+            print("[baseline][test] EMA-naive RMSE:", _rmse(y_all[test_sl], ema_naive[test_sl]))
+
+            # Persist into config for UI/debugging
+            try:
+                metrics_blk = config.setdefault("metrics", {})
+                metrics_blk.setdefault("baseline", {})
+                metrics_blk["baseline"]["val"] = {
+                    "naive_last_rmse": _rmse(y_all[val_sl], naive_last[val_sl]),
+                    "seasonal_24_rmse": _rmse(y_all[val_sl], seasonal_24[val_sl]),
+                    "ema_naive_rmse": _rmse(y_all[val_sl], ema_naive[val_sl]),
+                }
+                metrics_blk["baseline"]["test"] = {
+                    "naive_last_rmse": _rmse(y_all[test_sl], naive_last[test_sl]),
+                    "seasonal_24_rmse": _rmse(y_all[test_sl], seasonal_24[test_sl]),
+                    "ema_naive_rmse": _rmse(y_all[test_sl], ema_naive[test_sl]),
+                }
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[baseline] skipped: {e}")
+
     # --- 2. 准备 Informer 的输入数据 ---
     x_enc_train, x_dec_train, y_train, _ = prepare_informer_inputs(train_df_sc, config)
     x_enc_val, x_dec_val, y_val, x_feature_val = prepare_informer_inputs(val_df_sc, config)
+    # Fail fast if any NaN/Inf slipped into windows (prevents long NaN training)
+    try:
+        assert_no_nan(x_enc_train, "x_enc_train")
+        assert_no_nan(x_dec_train, "x_dec_train")
+        assert_no_nan(y_train, "y_train")
+        assert_no_nan(x_enc_val, "x_enc_val")
+        assert_no_nan(x_dec_val, "x_dec_val")
+        assert_no_nan(y_val, "y_val")
+    except Exception as e:
+        raise ValueError(f"[informer] 输入窗口含 NaN/Inf，无法训练：{e}") from e
 
     # --- 3. 创建 DataLoader ---
     train_loader = make_informer_loader(
@@ -398,6 +652,10 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
     value_col = config.get('default', {}).get('value_col', 'value')
     resolved_feature_cols = config.get('data', {}).get('all_feature_cols') or informer_cfg.get('feature_cols') or [value_col]
     c_in = len(resolved_feature_cols)
+    try:
+        target_idx = int(resolved_feature_cols.index(value_col))
+    except Exception:
+        target_idx = 0
     informer_cfg['enc_in'] = c_in
     informer_cfg['dec_in'] = c_in
     informer_cfg['c_out'] = 1  # always predict target only
@@ -419,20 +677,34 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
     _rmse_cfg = thr_cfg.get('RMSE')
     _mape_cfg = thr_cfg.get('MAPE')
 
-    rmse_thr = float(_rmse_cfg if _rmse_cfg is not None else 10.0)
+    rmse_thr = float(_rmse_cfg if _rmse_cfg is not None else 0.10)
     mape_thr = float(_mape_cfg if _mape_cfg is not None else 0.05)
 
     # 兜底，保证为有限数，避免出现 <= inf
     if not math.isfinite(rmse_thr):
-        rmse_thr = 10.0
+        rmse_thr = 0.10
     if not math.isfinite(mape_thr):
         mape_thr = 0.05
+
+    # Back-compat: if user provides 10 (meaning 10%), convert to 0.10
+    if rmse_thr > 1.0:
+        rmse_thr = rmse_thr / 100.0
 
     es_metric_name = str(thr_cfg.get('early_stop_metric', 'MAPE')).upper()  # {'MAPE','RMSE','VAL_LOSS'}
     es_logic = str(thr_cfg.get('logic', 'and')).lower()                     # 'and' or 'or'
     es_reset = bool(thr_cfg.get('patience_reset_if_worse', True))
 
     print("--- Starting Informer Training ---")
+    progress_cb = None
+    try:
+        progress_cb = (config.get("callbacks") or {}).get("progress")
+    except Exception:
+        progress_cb = None
+    if callable(progress_cb):
+        try:
+            progress_cb(stage="train", epoch=0, epochs=n_epochs, msg="start")
+        except Exception:
+            pass
     for epoch in range(n_epochs):
         model.train()
         epoch_loss = []
@@ -442,13 +714,24 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
             batch_x_dec = torch.as_tensor(batch_x_dec, dtype=torch.float32, device=device).contiguous()
             batch_y     = torch.as_tensor(batch_y,     dtype=torch.float32, device=device).contiguous()
             outputs = informer_forward(model, batch_x_enc, batch_x_dec, device=device, return_numpy=False)
-            loss = criterion(outputs[:, -pred_len:, :], batch_y[:, -pred_len:, :].to(device))
+            y_tgt = batch_y[:, -pred_len:, target_idx:target_idx+1]
+            loss = criterion(outputs[:, -pred_len:, :], y_tgt.to(device))
+            if not torch.isfinite(loss):
+                raise ValueError("Informer training loss became NaN/Inf. Usually caused by NaN in inputs or unstable gradients.")
             loss.backward()
+            # Optional: gradient clipping for stability
+            grad_clip = informer_cfg.get("grad_clip", 1.0)
+            try:
+                grad_clip_v = float(grad_clip) if grad_clip is not None else None
+            except Exception:
+                grad_clip_v = None
+            if grad_clip_v is not None and grad_clip_v > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_v)
             optimizer.step()
             epoch_loss.append(loss.item())
 
         # --- 验证（同时计算原尺度 RMSE / MAPE）---
-                # --- 验证 ---
+        # --- 验证 ---
         model.eval()
         val_loss = []
         # 为了后面算 RMSE/MAPE，把当轮的预测与真值也收集下来
@@ -460,13 +743,14 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
                 batch_x_dec = torch.as_tensor(batch_x_dec, dtype=torch.float32, device=device).contiguous()
                 batch_y     = torch.as_tensor(batch_y,     dtype=torch.float32, device=device).contiguous()
                 outputs = informer_forward(model, batch_x_enc, batch_x_dec, device=device, return_numpy=False)
-                loss = criterion(outputs[:, -pred_len:, :], batch_y[:, -pred_len:, :].to(device))
+                y_tgt = batch_y[:, -pred_len:, target_idx:target_idx+1]
+                loss = criterion(outputs[:, -pred_len:, :], y_tgt.to(device))
                 val_loss.append(loss.item())
 
                 # 收集用于阈值评估的 scaled 输出
                 c_pred = outputs.shape[-1]
                 out_np = safe_to_numpy(outputs[:, -pred_len:, :c_pred])
-                y_np   = safe_to_numpy(batch_y[:, -pred_len:, :c_pred])
+                y_np   = safe_to_numpy(batch_y[:, -pred_len:, target_idx:target_idx+1])
                 val_preds_scaled_epoch.append(out_np)
                 val_true_scaled_epoch.append(y_np)
 
@@ -492,22 +776,73 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
                 rmse  = float(np.sqrt(np.mean(diff ** 2)))
                 eps   = 1e-8
                 mape  = float(np.mean(np.abs(diff) / (np.abs(true1) + eps)))
+                mean_abs = float(np.mean(np.abs(true1))) if true1.size else float('nan')
+                nrmse = float(rmse / (mean_abs + eps)) if np.isfinite(mean_abs) else float('inf')
             else:
-                rmse, mape = float('inf'), float('inf')
+                rmse, mape, nrmse = float('inf'), float('inf'), float('inf')
         except Exception as _e:
             print(f"[ES] warning: compute val RMSE/MAPE failed: {_e}")
-            rmse, mape = float('inf'), float('inf')
+            rmse, mape, nrmse = float('inf'), float('inf'), float('inf')
 
-        print(f"Epoch {epoch+1}/{n_epochs} | Train Loss: {avg_train_loss:.7f} | Val Loss: {avg_val_loss:.7f} | "
-              f"Val RMSE: {rmse:.6f} | Val MAPE: {mape:.6f}")
+        # --- Option: use rolling (pred_len=1) validation metric like test ---
+        rmse_roll = None
+        mape_roll = None
+        nrmse_roll = None
+        try:
+            val_eval_mode = str(informer_cfg.get("val_eval_mode", "window")).lower()
+            if val_eval_mode in ("rolling", "rolling_like_test"):
+                data_blk = config.get('data', {}) or {}
+                train_df_sc = data_blk.get('train_df_sc')
+                val_df_sc = data_blk.get('val_df_sc')
+                if isinstance(train_df_sc, pd.DataFrame) and isinstance(val_df_sc, pd.DataFrame) and len(val_df_sc) > 0:
+                    df_all_val = pd.concat([train_df_sc, val_df_sc], axis=0, ignore_index=True)
+                    val_dense_epoch = _dense_predict_last_k(model, df_all_val, int(len(val_df_sc)), config, feature_cols, scaler)
+                    if isinstance(val_dense_epoch, pd.DataFrame) and {'y_true','yhat'} <= set(val_dense_epoch.columns) and len(val_dense_epoch) > 0:
+                        diff_r = (val_dense_epoch['yhat'].astype(float) - val_dense_epoch['y_true'].astype(float)).to_numpy()
+                        tru_r = val_dense_epoch['y_true'].astype(float).to_numpy()
+                        rmse_roll = float(np.sqrt(np.mean(diff_r ** 2)))
+                        mape_roll = float(np.mean(np.abs(diff_r) / (np.abs(tru_r) + 1e-8)))
+                        mean_abs_r = float(np.mean(np.abs(tru_r))) if tru_r.size else float('nan')
+                        nrmse_roll = float(rmse_roll / (mean_abs_r + 1e-8)) if np.isfinite(mean_abs_r) else float('inf')
+        except Exception:
+            rmse_roll = None
+            mape_roll = None
+            nrmse_roll = None
+
+        rmse_es = rmse_roll if rmse_roll is not None else rmse
+        mape_es = mape_roll if mape_roll is not None else mape
+        nrmse_es = nrmse_roll if nrmse_roll is not None else nrmse
+
+        if rmse_roll is not None and mape_roll is not None:
+            print(f"Epoch {epoch+1}/{n_epochs} | Train Loss: {avg_train_loss:.7f} | Val Loss: {avg_val_loss:.7f} | "
+                  f"Val RMSE: {rmse:.6f} | Val nRMSE: {nrmse:.6f} | Val MAPE: {mape:.6f} | RollingVal RMSE: {rmse_roll:.6f} | RollingVal nRMSE: {nrmse_roll:.6f} | RollingVal MAPE: {mape_roll:.6f}")
+        else:
+            print(f"Epoch {epoch+1}/{n_epochs} | Train Loss: {avg_train_loss:.7f} | Val Loss: {avg_val_loss:.7f} | "
+                  f"Val RMSE: {rmse:.6f} | Val nRMSE: {nrmse:.6f} | Val MAPE: {mape:.6f}")
+
+        # Streamlit/UI progress callback (per epoch)
+        if callable(progress_cb):
+            try:
+                progress_cb(
+                    stage="train",
+                    epoch=int(epoch + 1),
+                    epochs=int(n_epochs),
+                    train_loss=float(avg_train_loss),
+                    val_loss=float(avg_val_loss),
+                    val_nrmse=float(nrmse_es),
+                    val_mape=float(mape_es),
+                )
+            except Exception:
+                pass
 
         # === 以配置的 early_stop_metric（RMSE/MAPE/VAL_LOSS）驱动 patience，并记录指标 ===
         # --- Select early-stop driving metric (lower is better) ---
         es_name = es_metric_name  # already resolved above
         if es_name == 'RMSE':
-            es_value = rmse
+            es_name = 'NRMSE'
+            es_value = nrmse_es
         elif es_name == 'MAPE':
-            es_value = mape
+            es_value = mape_es
         else:
             es_name = 'VAL_LOSS'
             es_value = avg_val_loss
@@ -518,22 +853,23 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
         # Persist latest validation metrics for app/pipeline use
         try:
             cfg_metrics = config.setdefault('metrics', {})
-            cfg_metrics['val'] = {'rmse': float(rmse), 'mape': float(mape)}
-            # also keep the current early-stop metric value for transparency
+            cfg_metrics['val'] = {'rmse': float(rmse_es), 'nrmse': float(nrmse_es), 'mape': float(mape_es)}
+            if rmse_roll is not None and mape_roll is not None:
+                cfg_metrics.setdefault('val_internal', {})['rolling_like_test'] = {'rmse': float(rmse_roll), 'nrmse': float(nrmse_roll), 'mape': float(mape_roll)}
             cfg_metrics.setdefault('val_internal', {})['early_stop_metric'] = {'name': es_name, 'value': float(es_value)}
         except Exception:
             pass
 
         # === 阈值与 patience 联动早停 ===
         if es_logic == 'or':
-            thresholds_met = (rmse <= rmse_thr) or (mape <= mape_thr)
+            thresholds_met = (nrmse_es <= rmse_thr) or (mape_es <= mape_thr)
         else:
-            thresholds_met = (rmse <= rmse_thr) and (mape <= mape_thr)
+            thresholds_met = (nrmse_es <= rmse_thr) and (mape_es <= mape_thr)
 
         print(f"[ES] thresholds met: {thresholds_met} "
-              f"(rmse={rmse:.6f}<= {rmse_thr}, mape={mape:.6f}<= {mape_thr}, logic={es_logic}) "
+              f"(nrmse={nrmse_es:.6f}<= {rmse_thr} (RMSE%<= {rmse_thr*100:.1f}%), rmse_abs={rmse_es:.6f}, mape={mape_es:.6f}<= {mape_thr}, logic={es_logic}) "
               f"patience={early_stopping.counter}/{early_stopping.patience}")
-        print(f"[ES] driver metric: {es_metric_name}={es_value:.6f} | patience={early_stopping.counter}/{early_stopping.patience}")
+        print(f"[ES] driver metric: {es_name}={es_value:.6f} | patience={early_stopping.counter}/{early_stopping.patience}")
 
         # 只有“patience 用尽 且 阈值达标”才真正 early stop
         if early_stopping.counter >= early_stopping.patience:
@@ -675,7 +1011,7 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
         if n_val > 0:
             df_all_val = pd.concat([train_df_sc, val_df_sc], axis=0, ignore_index=True)
             val_dense = _dense_predict_last_k(
-                model, df_all_val, n_val, config, feature_cols, scaler, residual_model=residual_model
+                model, df_all_val, n_val, config, feature_cols, scaler
             )
             data_blk['val_dense'] = val_dense
 
@@ -683,11 +1019,92 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
         if n_test > 0:
             df_all_test = pd.concat([train_df_sc, val_df_sc, test_df_sc], axis=0, ignore_index=True)
             test_dense = _dense_predict_last_k(
-                model, df_all_test, n_test, config, feature_cols, scaler, residual_model=residual_model
+                model, df_all_test, n_test, config, feature_cols, scaler
             )
             data_blk['test_dense'] = test_dense
     except Exception as e:
         print(f"Warning: dense prediction failed: {e}")
+
+    # --- Optional post-hoc calibration (fit on val, apply to val+test) ---
+    # Goal: reduce absolute RMSE while keeping MAPE nearly unchanged.
+    try:
+        data_blk = config.get('data', {}) or {}
+        pcfg = (config.get('post_calibration') or {})
+        enabled = bool(pcfg.get('enabled', True))
+        if enabled:
+            def _dense_metrics(df):
+                if not (isinstance(df, pd.DataFrame) and {'y_true', 'yhat'}.issubset(df.columns) and len(df) > 0):
+                    return None
+                yt = pd.to_numeric(df['y_true'], errors='coerce').to_numpy(dtype=float)
+                yp = pd.to_numeric(df['yhat'], errors='coerce').to_numpy(dtype=float)
+                m = np.isfinite(yt) & np.isfinite(yp)
+                if int(m.sum()) < 16:
+                    return None
+                diff = yp[m] - yt[m]
+                rmse = float(np.sqrt(np.mean(diff * diff)))
+                mape = float(np.mean(np.abs(diff) / (np.abs(yt[m]) + 1e-8)))
+                return rmse, mape
+
+            def _fit_affine(df):
+                yt = pd.to_numeric(df['y_true'], errors='coerce').to_numpy(dtype=float)
+                yp = pd.to_numeric(df['yhat'], errors='coerce').to_numpy(dtype=float)
+                m = np.isfinite(yt) & np.isfinite(yp)
+                yt = yt[m]; yp = yp[m]
+                if yt.size < 16:
+                    return None
+                mu_t = float(np.mean(yt))
+                mu_p = float(np.mean(yp))
+                x = yp - mu_p
+                y = yt - mu_t
+                ridge = float(pcfg.get('ridge', 1e-6))
+                denom = float(np.dot(x, x) + ridge * yt.size)
+                if not np.isfinite(denom) or denom <= 0:
+                    return None
+                a = float(np.dot(x, y) / denom)
+                b = float(mu_t - a * mu_p)
+                # keep calibration conservative by default
+                a_min, a_max = pcfg.get('a_clip', [0.8, 1.2])
+                try:
+                    a_min = float(a_min); a_max = float(a_max)
+                except Exception:
+                    a_min, a_max = 0.8, 1.2
+                if np.isfinite(a):
+                    a = float(np.clip(a, a_min, a_max))
+                # limit offset relative to typical magnitude
+                mean_abs = float(np.mean(np.abs(yt))) if yt.size else 0.0
+                b_ratio = float(pcfg.get('b_clip_ratio', 0.1))
+                b_lim = max(1e-6, mean_abs * b_ratio)
+                if np.isfinite(b):
+                    b = float(np.clip(b, -b_lim, b_lim))
+                return {'a': a, 'b': b}
+
+            val_df = data_blk.get('val_dense')
+            test_df = data_blk.get('test_dense')
+            if isinstance(val_df, pd.DataFrame) and not val_df.empty:
+                base = _dense_metrics(val_df)
+                calib = _fit_affine(val_df)
+                if base and calib:
+                    a = float(calib['a']); b = float(calib['b'])
+                    val_adj = val_df.copy()
+                    val_adj['yhat'] = pd.to_numeric(val_adj['yhat'], errors='coerce') * a + b
+                    newm = _dense_metrics(val_adj)
+                    if newm:
+                        rmse0, mape0 = base
+                        rmse1, mape1 = newm
+                        mape_guard_rel = float(pcfg.get('mape_guard_rel', 1.02))
+                        if (rmse1 < rmse0) and (mape1 <= mape0 * mape_guard_rel):
+                            data_blk['val_dense'] = val_adj
+                            if isinstance(test_df, pd.DataFrame) and not test_df.empty:
+                                test_adj = test_df.copy()
+                                test_adj['yhat'] = pd.to_numeric(test_adj['yhat'], errors='coerce') * a + b
+                                data_blk['test_dense'] = test_adj
+                            data_blk['val_calib'] = calib
+                            print(f"[post_calibration] applied: a={a:.6f}, b={b:.6f} | val rmse {rmse0:.6f}->{rmse1:.6f}, mape {mape0:.6f}->{mape1:.6f}")
+                        else:
+                            data_blk['val_calib'] = calib
+                            print(f"[post_calibration] skipped (guard): val rmse {rmse0:.6f}->{rmse1:.6f}, mape {mape0:.6f}->{mape1:.6f}")
+    except Exception as e:
+        print(f"Warning: post calibration failed: {e}")
 
     # --- Compute final RMSE/MAPE from dense outputs (if available) ---
     def _compute_dense_metrics(df):

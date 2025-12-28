@@ -60,6 +60,7 @@ def create_windows_for_informer(
 
     此函数根据 Informer 的 seq_len, label_len, pred_len 参数，
     生成编码器输入(x_enc)、解码器输入(x_dec)、目标标签(y_label)和残差模型特征(x_feature)。
+    IMPORTANT: x_dec 的未来 pred_len 部分必须为占位符（通常为 0），否则会产生目标泄漏。
 
     Args:
         data_values (np.ndarray): 已经归一化好的、形状为 (n_samples, n_features) 的数据。
@@ -93,14 +94,15 @@ def create_windows_for_informer(
         enc_end = i + seq_len
         x_enc_list.append(data_values[enc_start:enc_end, :])
 
-        # 解码器输入: [i + seq_len - label_len, i + seq_len + pred_len)
-        # 这是 Informer 的一个关键点：解码器输入包含一部分历史(label_len)和未来(pred_len)
+        # 解码器输入: 历史 label_len + 未来 pred_len 的占位符（0）
+        # 关键：未来 pred_len 不能喂真实值，否则训练/评估会目标泄漏。
         dec_start = enc_end - label_len
         dec_end = enc_end + pred_len
-        x_dec_list.append(data_values[dec_start:dec_end, :])
+        hist = data_values[dec_start:enc_end, :]
+        fut = np.zeros((pred_len, data_values.shape[1]), dtype=data_values.dtype)
+        x_dec_list.append(np.concatenate([hist, fut], axis=0))
         
-        # 目标标签 (y_label) 在Informer中与解码器输入(x_dec)是相同的，
-        # 因为模型的目标是预测出完整的 x_dec 序列。
+        # 目标标签：仍然保留真实的 label_len+pred_len，用于 loss/metrics（但 loss 通常只取最后 pred_len）。
         y_label_list.append(data_values[dec_start:dec_end, :])
 
     x_enc = np.array(x_enc_list)

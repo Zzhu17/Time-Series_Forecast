@@ -1,0 +1,217 @@
+{
+  "input_candidates": [
+    "total load forecast",
+    "month",
+    "day_of_month",
+    "day_of_week",
+    "hour",
+    "day_of_year",
+    "forecast solar day ahead",
+    "forecast wind onshore day ahead",
+    "price day ahead",
+    "price actual"
+  ],
+  "normalized_candidates": [
+    "total load forecast",
+    "month",
+    "day_of_month",
+    "day_of_week",
+    "hour",
+    "day_of_year",
+    "forecast solar day ahead",
+    "forecast wind onshore day ahead",
+    "price day ahead",
+    "price actual"
+  ],
+  "removed": [],
+  "scores": {
+    "mi": {
+      "month": 0.07285591121351809,
+      "day_of_month": 0.05856959700473574,
+      "day_of_week": 0.06861705333738222,
+      "hour": 0.4682550332495481,
+      "forecast solar day ahead": 0.15726535790501472,
+      "forecast wind onshore day ahead": 0.031588682064761286,
+      "price day ahead": 0.2021895749529321,
+      "price actual": 0.1358344830511209
+    },
+    "rf_importance": {
+      "month": 0.03894214683516532,
+      "day_of_month": 0.06616835937387709,
+      "day_of_week": 0.08893206253722874,
+      "hour": 0.6590578610313932,
+      "forecast solar day ahead": 0.012204718095579716,
+      "forecast wind onshore day ahead": 0.015277336531157348,
+      "price day ahead": 0.10002067741315981,
+      "price actual": 0.019396838182438845
+    },
+    "combined_rank": [
+      "hour",
+      "price day ahead",
+      "forecast solar day ahead",
+      "price actual",
+      "day_of_week",
+      "day_of_month",
+      "month",
+      "forecast wind onshore day ahead"
+    ]
+  },
+  "redundancy": {
+    "dropped_pairs": [
+      {
+        "keep": "month",
+        "drop": "day_of_year",
+        "corr": 0.9965632733739159
+      }
+    ],
+    "dropped_cols": [
+      "day_of_year"
+    ]
+  },
+  "params": {
+    "missing_rate_threshold": 0.4,
+    "low_variance_threshold": 1e-08,
+    "redundant_corr_threshold": 0.95,
+    "max_features": null,
+    "selector": "mi+rf"
+  },
+  "missing_policy": {
+    "dropped_optional": [
+      {
+        "col": "generation biomass",
+        "reason": "has_nan"
+      },
+      {
+        "col": "generation fossil brown coal/lignite",
+        "reason": "has_nan"
+      },
+      {
+        "col": "generation fossil coal-derived gas",
+        "reason": "has_nan"
+      },
+      {
+        "col": "generation fossil gas",
+        "reason": "has_nan"
+      },
+      {
+        "col": "generation fossil hard coal",
+        "reason": "has_nan"
+      },
+      {
+        "col": "generation fossil oil",
+        "reason": "has_nan"
+      },
+      {
+        "col": "generation fossil oil shale",
+        "reason": "has_nan"
+      },
+      {
+        "col": "generation fossil peat",
+        "reason": "has_nan"
+      },
+      {
+        "col": "generation geothermal",
+        "reason": "has_nan"
+      },
+      {
+        "col": "generation hydro pumped storage aggregated",
+        "reason": "has_nan"
+      },
+      {
+        "col": "generation hydro pumped storage consumption",
+        "reason": "has_nan"
+      },
+      {
+        "col": "generation hydro run-of-river and poundage",
+        "reason": "has_nan"
+      },
+      {
+        "col": "generation hydro water reservoir",
+        "reason": "has_nan"
+      },
+      {
+        "col": "generation marine",
+        "reason": "has_nan"
+      },
+      {
+        "col": "generation nuclear",
+        "reason": "has_nan"
+      },
+      {
+        "col": "generation other",
+        "reason": "has_nan"
+      },
+      {
+        "col": "generation other renewable",
+        "reason": "has_nan"
+      },
+      {
+        "col": "generation solar",
+        "reason": "has_nan"
+      },
+      {
+        "col": "generation waste",
+        "reason": "has_nan"
+      },
+      {
+        "col": "generation wind offshore",
+        "reason": "has_nan"
+      },
+      {
+        "col": "generation wind onshore",
+        "reason": "has_nan"
+      },
+      {
+        "col": "forecast wind offshore eday ahead",
+        "reason": "has_nan"
+      },
+      {
+        "col": "total load actual",
+        "reason": "has_nan"
+      }
+    ],
+    "recomputed": [],
+    "trimmed_prefix_rows": 0,
+    "tiers": {
+      "required_core": [
+        "total load forecast"
+      ],
+      "repairable_core": [
+        "month",
+        "day_of_month",
+        "day_of_week",
+        "hour",
+        "day_of_year"
+      ],
+      "optional": [
+        "generation biomass",
+        "generation fossil brown coal/lignite",
+        "generation fossil coal-derived gas",
+        "generation fossil gas",
+        "generation fossil hard coal",
+        "generation fossil oil",
+        "generation fossil oil shale",
+        "generation fossil peat",
+        "generation geothermal",
+        "generation hydro pumped storage aggregated",
+        "generation hydro pumped storage consumption",
+        "generation hydro run-of-river and poundage",
+        "generation hydro water reservoir",
+        "generation marine",
+        "generation nuclear",
+        "generation other",
+        "generation other renewable",
+        "generation solar",
+        "generation waste",
+        "generation wind offshore",
+        "generation wind onshore",
+        "forecast solar day ahead",
+        "forecast wind offshore eday ahead",
+        "forecast wind onshore day ahead",
+        "total load actual",
+        "price day ahead",
+        "price actual"
+      ]
+    }
+  }
+}

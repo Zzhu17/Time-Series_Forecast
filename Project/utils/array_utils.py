@@ -1,8 +1,11 @@
 import numpy as np
 from typing import Optional, Any, Tuple, Union, List
-import torch
-from sklearn.preprocessing import MinMaxScaler
 import pandas as pd
+
+try:
+    from sklearn.preprocessing import MinMaxScaler  # type: ignore
+except Exception:
+    MinMaxScaler = None  # type: ignore[assignment]
 
 def ensure_array_safe(arr):
     if arr is None:
@@ -18,7 +21,7 @@ def safe_to_numpy(arr: Optional[Any]) -> Optional[np.ndarray]:
 
     # 尝试处理 torch.Tensor
     try:
-        import torch
+        import torch  # type: ignore
         if isinstance(arr, torch.Tensor):
             arr = arr.detach().cpu().numpy()
     except ImportError:
@@ -29,8 +32,7 @@ def safe_to_numpy(arr: Optional[Any]) -> Optional[np.ndarray]:
     except Exception:
         return None
 
-    # 调用 safe_to_float_array，将字符串/object/unicode 类型转换为浮点数
-    from .array_utils import safe_to_float_array  # 或者根据您的文件结构调整 import
+    # 将字符串/object/unicode 类型转换为浮点数
     arr_np = safe_to_float_array(arr_np)
     return arr_np
 
@@ -89,7 +91,7 @@ def clean_dataframe(
         return None
     df = df.copy()
     if time_col and time_to_datetime and time_col in df.columns:
-        df[time_col] = pd.to_datetime(df[time_col], errors='coerce')
+        df[time_col] = pd.to_datetime(df[time_col], errors='coerce', utc=True)
     if feature_cols:
         cols = [c for c in [time_col, value_col] if c] + list(feature_cols)
         cols = list(dict.fromkeys(cols))
@@ -99,9 +101,9 @@ def clean_dataframe(
         
     if fillna is not None:
         if fillna == "ffill":
-            df = df.fillna(method="ffill")  # pyright: ignore[reportCallIssue] # OK
+            df = df.ffill()
         elif fillna == "bfill":
-            df = df.fillna(method="bfill")  # pyright: ignore[reportCallIssue] # OK
+            df = df.bfill()
         elif fillna == "zero":
             df = df.fillna(0)
         elif fillna == "mean" and value_col and value_col in df.columns:

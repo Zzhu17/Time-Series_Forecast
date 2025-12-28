@@ -5,7 +5,12 @@ import joblib
 import os
 from typing import List, Dict, Any, Tuple, cast
 
-def generate_features(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[pd.DataFrame, List[str]]:
+def generate_features(
+    df: pd.DataFrame,
+    config: Dict[str, Any],
+    *,
+    manage_feature_cols: bool = True,
+) -> Tuple[pd.DataFrame, List[str]]:
     """
     根据配置生成时间序列特征。
 
@@ -62,45 +67,45 @@ def generate_features(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[pd.Data
     df['day_of_year'] = df[time_col].dt.dayofyear
     time_feature_cols = ['month', 'day_of_month', 'day_of_week', 'hour', 'day_of_year']
 
-    # ---- 4) 丢弃缺失行并重建索引 ----
-    df = df.dropna().reset_index(drop=True)
+    # ---- 4) 丢弃关键列缺失行并重建索引 ----
+    # 只对 time/value 做硬过滤；其他特征缺失交给后续的特征契约/填补策略处理，避免丢太多数据。
+    df = df.dropna(subset=[time_col, value_col]).reset_index(drop=True)
 
-    # ---- 5) 解析 / 推断 feature_cols（单/多变量自适配） ----
-    # 优先读取配置；当 auto_feature_cols=True 或未显式指定 feature_cols 时走自动推断
-    inf_cfg = config.setdefault('model_config', {}).setdefault('Informer', {})
-    cfg_cols = inf_cfg.get('feature_cols')
-    auto_on = bool(inf_cfg.get('auto_feature_cols', True))
+    # ---- 5) (Optional) 解析 / 推断 feature_cols（单/多变量自适配） ----
+    # 平台级 feature contract/selection 会在上层做；这里保留旧行为作为默认兼容。
+    if manage_feature_cols:
+        # 优先读取配置；当 auto_feature_cols=True 或未显式指定 feature_cols 时走自动推断
+        inf_cfg = config.setdefault('model_config', {}).setdefault('Informer', {})
+        cfg_cols = inf_cfg.get('feature_cols')
+        auto_on = bool(inf_cfg.get('auto_feature_cols', True))
 
-    feature_cols: List[str]
-    if auto_on and (not cfg_cols or len(cfg_cols) == 0):
-        # 自动：取所有数值列，排除时间列；确保 value_col 在首位
-        numeric_cols: List[str] = list(df.select_dtypes(include=[np.number]).columns)
-        # 移除 time_col（通常是 datetime，不会出现在 numeric_cols，但稳妥起见）
-        if time_col in numeric_cols:
-            numeric_cols.remove(time_col)
-        # 确保 value_col 在首位
-        others = [c for c in numeric_cols if c != value_col]
-        feature_cols = [value_col] + others
-    else:
-        # 使用配置给定列，但要与 df 取交集，并保证 value_col 在首位
-        cfg_list: List[str] = list(cfg_cols) if cfg_cols else [value_col]
-        present: List[str] = [str(c) for c in cfg_list if c in df.columns]
-        missing: List[str] = [str(c) for c in cfg_list if c not in df.columns]
-        if missing:
-            pass
-        others: List[str] = [c for c in present if c != value_col]
-        head: List[str] = [value_col] if value_col in df.columns else []
-        feature_cols = head + others
-        if not feature_cols:
-            feature_cols = [value_col]
+        feature_cols: List[str]
+        if auto_on and (not cfg_cols or len(cfg_cols) == 0):
+            # 自动：取所有数值列，排除时间列；确保 value_col 在首位
+            numeric_cols: List[str] = list(df.select_dtypes(include=[np.number]).columns)
+            # 移除 time_col（通常是 datetime，不会出现在 numeric_cols，但稳妥起见）
+            if time_col in numeric_cols:
+                numeric_cols.remove(time_col)
+            # 确保 value_col 在首位
+            others = [c for c in numeric_cols if c != value_col]
+            feature_cols = [value_col] + others
+        else:
+            # 使用配置给定列，但要与 df 取交集，并保证 value_col 在首位
+            cfg_list: List[str] = list(cfg_cols) if cfg_cols else [value_col]
+            present: List[str] = [str(c) for c in cfg_list if c in df.columns]
+            others: List[str] = [c for c in present if c != value_col]
+            head: List[str] = [value_col] if value_col in df.columns else []
+            feature_cols = head + others
+            if not feature_cols:
+                feature_cols = [value_col]
 
-    # ---- 6) 回写已决策的特征列，供下游（scaler/切窗/模型）统一使用 ----
-    inf_cfg['feature_cols'] = feature_cols
+        # ---- 6) 回写已决策的特征列，供下游（scaler/切窗/模型）统一使用 ----
+        inf_cfg['feature_cols'] = feature_cols
 
-    # 保证输出 DataFrame 至少包含 time_col 与 feature_cols（按既定顺序）
-    ordered_cols: List[str] = [time_col] + [c for c in feature_cols if c in df.columns]
-    # 将其他非特征列原样保留在 df 中（不改变已有下游依赖），但特征列顺序按 ordered_cols 保证
-    df = df[[c for c in ordered_cols if c in df.columns] + [c for c in df.columns if c not in ordered_cols]]
+        # 保证输出 DataFrame 至少包含 time_col 与 feature_cols（按既定顺序）
+        ordered_cols: List[str] = [time_col] + [c for c in feature_cols if c in df.columns]
+        # 将其他非特征列原样保留在 df 中（不改变已有下游依赖），但特征列顺序按 ordered_cols 保证
+        df = df[[c for c in ordered_cols if c in df.columns] + [c for c in df.columns if c not in ordered_cols]]
 
     return df, time_feature_cols
 

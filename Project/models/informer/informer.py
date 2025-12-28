@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from typing import Any, Optional, Dict
+from utils.device_utils import get_device_from_config
 
 # 从独立的 layers.py 文件中导入所有需要的“零件”
 from models.informer.layers import (
@@ -77,8 +78,16 @@ class Informer(nn.Module):
                 enc_self_mask: Optional[torch.Tensor] = None, 
                 dec_self_mask: Optional[torch.Tensor] = None, 
                 dec_enc_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        x_enc = x_enc.to(self.device, self.dtype)
-        x_dec = x_dec.to(self.device, self.dtype)
+        try:
+            p = next(self.parameters())
+            dev = p.device
+            dt = p.dtype
+        except StopIteration:
+            dev = torch.device("cpu")
+            dt = torch.float32
+
+        x_enc = x_enc.to(device=dev, dtype=dt)
+        x_dec = x_dec.to(device=dev, dtype=dt)
         
         enc_out = self.enc_embedding(x_enc)
         enc_out = self.encoder(enc_out, mask=enc_self_mask)
@@ -127,7 +136,7 @@ def build_informer_model(config: Any) -> Informer:
         'dropout': get_conf_val(informer_cfg, 'dropout', 0.05),
         'attn_type': get_conf_val(informer_cfg, 'attn', 'prob'),
         'factor': get_conf_val(informer_cfg, 'factor', 5),
-        'device': get_conf_val(config, 'device', 'cpu'), # device 通常是全局配置
+        'device': get_device_from_config(config),  # resolved torch.device (supports auto/mps/cpu)
     }
 
     # 4. 【新增】关键参数验证

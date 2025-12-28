@@ -62,7 +62,11 @@ def run_training(model_name: str, config: Dict[str, Any]) -> Tuple[Any, pd.DataF
 
     # === 严格：取 df，并以 (df, config) 调用 ===
     data_blk = config.get("data", {}) or {}
-    df = data_blk.get("df") or data_blk.get("dataframe") or data_blk.get("raw_df")
+    df = None
+    for cand in (data_blk.get("df"), data_blk.get("dataframe"), data_blk.get("raw_df")):
+        if isinstance(cand, pd.DataFrame):
+            df = cand
+            break
     if df is None:
         raise ValueError("[training.dispatch] Missing config['data']['df'] for trainer input.")
 

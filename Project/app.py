@@ -1,80 +1,269 @@
-import sys
-import importlib
+import os
 import pandas as pd
 import numpy as np
 from typing import Optional, Dict
 import streamlit as st
+import services.snapshot as snapshot_mod
+
+from services.pipeline_loader import load_pipeline_module
+from services.snapshot import (
+    as_int,
+    cacheable_results,
+    load_last_results_json,
+)
+from visualizations.plot import df_from_long, render_true_pred, render_val_test
+
+# Disable pipeline-side Matplotlib plotting (can hang on macOS); the app renders plots itself.
+os.environ["TSF_PIPELINE_PLOT"] = "0"
+os.environ["TSF_BUILD_CONTINUOUS"] = "0"
+os.environ["TSF_DEBUG_CONTINUOUS"] = "0"
 
 # ---- Module-level constants ----
-PLOT_MOD = "visualizations.plot"
 MIME_CSV = "text/csv"
 
-from services.pipeline import run_train_predict_pipeline
-from types import SimpleNamespace
-from models.informer.predict import InformerPredictor
+try:
+    import torch  # type: ignore
+except Exception:
+    torch = None  # type: ignore[assignment]
 
-# --------- always load latest plot module (Patch C) ---------
-def load_plot_module():
+def _load_xgboost_hparams_from_configs_yaml() -> Optional[dict]:
     """
-    Always return a fresh visualizations.plot module.
-    Streamlit reruns can keep module cache; we reload explicitly.
+    Load model_config.XGBoost from `configs/configs.yaml` without requiring PyYAML.
+    Only supports the simple scalar key/value block we use for XGBoost.
     """
-    if PLOT_MOD in sys.modules:
-        importlib.reload(sys.modules[PLOT_MOD])
-        return sys.modules[PLOT_MOD]
+    try:
+        cfg_path = os.path.join(os.path.dirname(__file__), "configs", "configs.yaml")
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except Exception:
+        return None
+
+    in_model_config = False
+    xgb_indent = None
+    out: dict = {}
+
+    def _strip_comment(s: str) -> str:
+        # Good-enough: strip trailing comments starting with '#'
+        # (configs.yaml doesn't use quoted strings with '#').
+        return s.split("#", 1)[0].rstrip("\n")
+
+    def _parse_scalar(v: str):
+        v = v.strip()
+        if v == "":
+            return ""
+        if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+            return v[1:-1]
+        vl = v.lower()
+        if vl in ("true", "false"):
+            return vl == "true"
+        # number?
+        try:
+            if any(ch in v for ch in (".", "e", "E")) and v.replace(".", "", 1).replace("-", "", 1).replace("+", "", 1).replace("e", "", 1).replace("E", "", 1).isdigit():
+                return float(v)
+            if v.lstrip("+-").isdigit():
+                return int(v)
+        except Exception:
+            pass
+        return v
+
+    for raw in lines:
+        s = _strip_comment(raw)
+        if not s.strip():
+            continue
+        indent = len(s) - len(s.lstrip(" "))
+        txt = s.strip()
+
+        if not in_model_config:
+            if txt == "model_config:":
+                in_model_config = True
+            continue
+
+        # leave model_config section
+        if indent == 0 and ":" in txt:
+            break
+
+        if xgb_indent is None:
+            if txt == "XGBoost:":
+                xgb_indent = indent
+            continue
+
+        # leave XGBoost block
+        if indent <= xgb_indent:
+            break
+
+        if ":" not in txt:
+            continue
+        k, v = txt.split(":", 1)
+        k = k.strip()
+        v = v.strip()
+        if not k:
+            continue
+        out[k] = _parse_scalar(v)
+
+    return out or None
+
+def _to_df_plot_blob(blob):
+    if not isinstance(blob, dict):
+        return None
+    try:
+        return pd.DataFrame({"ts": blob.get("ts") or [], "true": blob.get("true") or [], "pred": blob.get("pred") or []})
+    except Exception:
+        return None
+
+def _render_cached_summary(results: dict, *, model_name: str, time_col: str, value_col: str):
+    """
+    Render a minimal-but-complete UI from cached results, so users still see outputs
+    even if Streamlit reruns cancel the original run-click execution.
+    """
+    dblk = (results.get("data", {}) or {})
+    if bool(dblk.get("degraded", False)):
+        st.error(
+            "⚠️ Results are degraded (degraded=True): Required Core features are missing/invalid; "
+            "baseline predictions were returned. Do not interpret them as normal results."
+        )
+        st.caption(f"degraded_reason={dblk.get('degraded_reason')} | degraded_mode={dblk.get('degraded_mode')}")
+        if dblk.get("missing_required_core"):
+            st.caption(f"Missing Required Core: {dblk.get('missing_required_core')}")
+        if dblk.get("dropped_optional_features"):
+            st.caption(f"Dropped optional features: {dblk.get('dropped_optional_features')}")
+        if dblk.get("degraded_error"):
+            st.caption(f"Error: {dblk.get('degraded_error')}")
+
+    metrics = results.get("metrics", {}) or {}
+    val_metrics = metrics.get("validation", {}) or {}
+    test_metrics = metrics.get("test", {}) or {}
+
+    data_blob = results.get("data", {}) or {}
+    split_info = data_blob.get("split", {}) or {}
+    train_len = as_int(split_info.get("train_len"))
+    val_len = as_int(split_info.get("val_len"))
+    test_len = as_int(split_info.get("test_len"))
+    if train_len is not None and val_len is not None and test_len is not None:
+        total = int(train_len) + int(val_len) + int(test_len)
+        if total > 0:
+            st.caption(
+                f"Split: train={train_len}, val={val_len}, test={test_len} "
+                f"(ratio ~ {train_len/total:.2f}/{val_len/total:.2f}/{test_len/total:.2f})"
+            )
+        else:
+            st.caption(f"Split: train={train_len}, val={val_len}, test={test_len}")
+
+    def _fmt(x, pct=False, safe=False, metrics=None):
+        if safe and isinstance(metrics, dict):
+            if metrics.get("mape_safe") is not None:
+                x = metrics.get("mape_safe")
+            elif metrics.get("mape") is not None:
+                x = metrics.get("mape")
+        if x is None:
+            return "—"
+        try:
+            xv = float(x)
+            if pct:
+                xv = xv * 100.0
+                return f"{xv:.2f}%"
+            return f"{xv:.4f}"
+        except Exception:
+            return str(x)
+
+    import numpy as _np
+
+    # nRMSE: rmse / mean(abs(y_true)); cached results usually only contain plot_data (last N points)
+    _plot_blob0 = (data_blob.get("plot_data") or {}) if isinstance(data_blob, dict) else {}
+    _val_plot0 = _plot_blob0.get("val") if isinstance(_plot_blob0, dict) else None
+    _test_plot0 = _plot_blob0.get("test") if isinstance(_plot_blob0, dict) else None
+
+    def _mean_abs_from_plot_blob(blob: Optional[dict]) -> Optional[float]:
+        if not isinstance(blob, dict):
+            return None
+        y = blob.get("true") or []
+        try:
+            arr = pd.to_numeric(pd.Series(y), errors="coerce").to_numpy(dtype=float)
+        except Exception:
+            try:
+                arr = _np.asarray(y, dtype=float)
+            except Exception:
+                return None
+        if arr.size == 0:
+            return None
+        mu = float(_np.nanmean(_np.abs(arr)))
+        return mu if _np.isfinite(mu) and mu != 0.0 else None
+
+    # Prefer persisted scalars (more stable than computing from truncated plot_data)
+    try:
+        mu_v = float(data_blob.get("mean_abs_true_val")) if isinstance(data_blob, dict) and data_blob.get("mean_abs_true_val") is not None else None # type: ignore
+    except Exception:
+        mu_v = None
+    try:
+        mu_t = float(data_blob.get("mean_abs_true_test")) if isinstance(data_blob, dict) and data_blob.get("mean_abs_true_test") is not None else None # type: ignore
+    except Exception:
+        mu_t = None
+    if not (isinstance(mu_v, (int, float)) and _np.isfinite(mu_v) and mu_v > 0):
+        mu_v = _mean_abs_from_plot_blob(_val_plot0)
+    if not (isinstance(mu_t, (int, float)) and _np.isfinite(mu_t) and mu_t > 0):
+        mu_t = _mean_abs_from_plot_blob(_test_plot0)
+    rv = val_metrics.get("rmse")
+    rt = test_metrics.get("rmse")
+    # Prefer direct nrmse if provided by trainer/pipeline; fallback to rmse/mean(|y|).
+    rv_nrmse = val_metrics.get("nrmse")
+    rt_nrmse = test_metrics.get("nrmse")
+    if rv_nrmse is None:
+        rv_nrmse = (float(rv) / float(mu_v)) if (rv is not None and mu_v) else None
+    if rt_nrmse is None:
+        rt_nrmse = (float(rt) / float(mu_t)) if (rt is not None and mu_t) else None
+    rv_pct = (rv_nrmse * 100.0) if rv_nrmse is not None else None
+    rt_pct = (rt_nrmse * 100.0) if rt_nrmse is not None else None
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("Val nRMSE", _fmt(rv_nrmse, pct=True))
+        st.caption(f"RMSE: {_fmt(rv)}")
+    with c2:
+        st.metric("Val MAPE", _fmt(None, pct=True, safe=True, metrics=val_metrics))
+    with c3:
+        st.metric("Test nRMSE", _fmt(rt_nrmse, pct=True))
+        st.caption(f"RMSE: {_fmt(rt)}")
+    with c4:
+        st.metric("Test MAPE", _fmt(None, pct=True, safe=True, metrics=test_metrics))
+
+    if rv_pct is not None or rt_pct is not None:
+        st.caption(f"Relative RMSE (vs mean |y|): Val {rv_pct:.3f}% | Test {rt_pct:.3f}%")
+
+    st.subheader("📈 Forecast (Val/Test)")
+    plot_blob = (data_blob.get("plot_data") or {}) if isinstance(data_blob, dict) else {}
+    val_plot = plot_blob.get("val") if isinstance(plot_blob, dict) else None
+    test_plot = plot_blob.get("test") if isinstance(plot_blob, dict) else None
+
+    has_plot_data = isinstance(val_plot, dict) or isinstance(test_plot, dict)
+
+    plot_n_opt = st.selectbox("Points to plot (last N)", ["1000", "2000", "4000", "ALL"], index=1, key="plot_n_cached")
+    marker_every = st.number_input("Marker every k points", min_value=20, max_value=2000, value=200, step=20, key="plot_marker_cached")
+    if has_plot_data:
+        n_points = None if plot_n_opt == "ALL" else int(plot_n_opt)
+        if plot_n_opt == "ALL":
+            st.warning("Rendering ALL points may be slow for large datasets.")
+        render_val_test(
+            _to_df_plot_blob(val_plot),
+            _to_df_plot_blob(test_plot),
+            time_col=time_col,
+            n_points=n_points,
+            marker_every=int(marker_every),
+        )
     else:
-        mod = importlib.import_module(PLOT_MOD)
-        return mod
+        st.caption("No curve data available yet. Run training once to generate plots.")
 
-# ---- safe helpers ----
-def _as_int(x, default: Optional[int] = None) -> Optional[int]:
-    """Best-effort convert to int; return default on failure."""
-    try:
-        if isinstance(x, (int, np.integer)):
-            return int(x)
-        if isinstance(x, str):
-            xs = x.strip()
-            if xs.isdigit() or (xs.startswith('-') and xs[1:].isdigit()):
-                return int(xs)
-            return int(float(xs))
-        if x is not None:
-            return int(x)
-    except Exception:
-        pass
-    return default
-
-# ---- build DataFrame from long JSON safely ----
-def _df_from_long(long_obj, time_col: str, value_name_true: str = 'y_true', value_name_pred: str = 'yhat') -> pd.DataFrame:
-    try:
-        if not isinstance(long_obj, dict):
-            return pd.DataFrame(columns=[time_col, value_name_true, value_name_pred])
-        ts  = list(long_obj.get('timestamps') or [])
-        y_t = list(long_obj.get('y_true') or [])
-        y_h = list(long_obj.get('yhat') or [])
-        # align lengths
-        n = min(len(ts), len(y_t), len(y_h))
-        if n == 0:
-            return pd.DataFrame(columns=[time_col, value_name_true, value_name_pred])
-        df = pd.DataFrame({
-            time_col: ts[:n],
-            value_name_true: pd.to_numeric(y_t[:n], errors='coerce'),
-            value_name_pred: pd.to_numeric(y_h[:n], errors='coerce'),
-        })
-        return df
-    except Exception:
-        return pd.DataFrame(columns=[time_col, value_name_true, value_name_pred])
-
-# 新增：将 dense DataFrame 转为标准明细 DataFrame 用于展示/导出
-def _df_from_dense_for_display(df_dense: Optional[pd.DataFrame], time_col: str) -> pd.DataFrame:
-    if not isinstance(df_dense, pd.DataFrame) or df_dense.empty:
-        return pd.DataFrame(columns=[time_col, "y_true", "yhat"])
-    out = df_dense.copy()
-    # 如果是 DatetimeIndex，则 reset_index 成时间列
-    if isinstance(out.index, pd.DatetimeIndex):
-        out = out.reset_index().rename(columns={out.index.name or "index": time_col})
-    # 只保留标准列
-    keep = [c for c in [time_col, "y_true", "yhat"] if c in out.columns]
-    return out[keep]
+    with st.expander("🧳 Artifacts", expanded=False):
+        arts = results.get("artifacts", {}) or {}
+        try:
+            paths = {}
+            for k in ("model_path", "scaler_path", "residual_model_path", "y_scaler_path", "feature_cols_path", "feature_report_path"):
+                v = (arts.get(k) if isinstance(arts, dict) else None)
+                if v:
+                    paths[k] = str(v)
+            if paths:
+                st.caption("Artifact paths")
+                st.json(paths)
+        except Exception:
+            pass
 
 
 # ==========================
@@ -82,76 +271,221 @@ def _df_from_dense_for_display(df_dense: Optional[pd.DataFrame], time_col: str) 
 # ==========================
 
 st.set_page_config(page_title="Universal TS Forecast", layout="wide")
-st.title("🧠 通用时间序列预测平台（中控台简约版）")
+st.title("🧠 Universal Time Series Forecast")
+st.caption(
+    "Note: Streamlit file watcher is disabled (see `.streamlit/config.toml`) "
+    "to avoid reruns interrupting training while writing artifacts."
+)
 
-# 主区域：上传文件 + 选择模型 + 运行
-uploaded = st.file_uploader("上传 CSV 文件", type=["csv"])
-model_name = st.selectbox("选择模型", ["informer", "arima", "prophet", "randomforest", "lstm"], index=0)
+# ---- Explicit state management: persist results & user actions across reruns ----
+st.session_state.setdefault("last_results", None)          # dict (cacheable)
+st.session_state.setdefault("last_meta", None)             # dict
+st.session_state.setdefault("last_results_source", None)   # fresh/degraded/snapshot
+st.session_state.setdefault("is_training", False)          # avoid stale snapshot rendering mid-run
+
+# Main: upload + model + run
+uploaded = st.file_uploader("Upload CSV", type=["csv"])
+
+# Presets are convenience shortcuts; they only configure (base model + residual learner).
+preset_name = st.selectbox(
+    "Preset",
+    ["Default", "Informer + XGBoost (residual)", "LSTM + XGBoost (residual)"],
+    index=0,
+)
+_preset_model = None
+_preset_residual = None
+if preset_name == "Informer + XGBoost (residual)":
+    _preset_model = "Informer"
+    _preset_residual = "xgboost"
+elif preset_name == "LSTM + XGBoost (residual)":
+    _preset_model = "LSTM"
+    _preset_residual = "XGBoost"
+
+model_options = ["Informer", "ARIMA", "Prophet", "RandomForest", "LSTM", "XGBoost"]
+try:
+    if _preset_model:
+        st.session_state["model_name"] = _preset_model
+    st.session_state.setdefault("model_name", model_options[0])
+except Exception:
+    pass
+model_name = st.selectbox("Model", model_options, index=0, key="model_name", disabled=bool(_preset_model))
+
+residual_options = ["none", "linear", "XGBoost"]
+try:
+    if _preset_residual:
+        st.session_state["residual_learner"] = _preset_residual
+    st.session_state.setdefault("residual_learner", "none")
+except Exception:
+    pass
+residual_learner = st.selectbox(
+    "Residual learner",
+    residual_options,
+    index=0,
+    key="residual_learner",
+    disabled=bool(_preset_residual),
+    help="Learns residual = y_true - y_hat_main, then adds it back to the main prediction.",
+)
+
+if torch is None:
+    st.warning("`torch` is not installed: Informer/LSTM are unavailable. Install with: `pip install torch`.")
+    device_choice = st.selectbox("Compute device", ["cpu"], index=0, help="Torch is missing; CPU only.")
+    mps_ok = False
+else:
+    device_choice = st.selectbox(
+        "Compute device",
+        ["auto", "mps", "cpu"],
+        index=0,
+        help="auto: prefer MPS, then CPU; mps: force MPS (no fallback)",
+    )
+    try:
+        mps_ok = bool(getattr(torch.backends, 'mps', None) is not None and torch.backends.mps.is_built() and torch.backends.mps.is_available())
+    except Exception:
+        mps_ok = False
+if device_choice == 'mps' and not mps_ok:
+    st.error("You selected MPS (forced), but MPS is not available in this PyTorch build. Upgrade PyTorch or switch to auto/cpu.")
+    st.stop()
+
 if model_name == "randomforest":
-    st.caption("⚙️ RandomForest 将强制进行 Optuna 调参（使用验证集，n_trials 由 configs.yaml 的 optimization.n_trials 控制，默认 50）。")
+    st.caption("⚙️ RandomForest runs Optuna tuning on the validation split (n_trials from configs.yaml: optimization.n_trials).")
 if model_name == "lstm":
-    st.caption("🧩 LSTM 将使用 configs.yaml 的 model_config.LSTM 超参（seq_len/hidden_dim/num_layers/n_epochs/learning_rate），并通过适配层生成整段 val/test 预测。")
-run_click = st.button("开始训练并预测", type="primary")
+    st.caption("🧩 LSTM uses configs.yaml: model_config.LSTM (seq_len/hidden_dim/num_layers/n_epochs/learning_rate) and produces dense val/test predictions.")
+if model_name == "xgboost":
+    st.caption("🌲 XGBoost uses configs.yaml: model_config.XGBoost and produces dense val/test predictions.")
+if residual_learner != "none":
+    st.caption(f"🧪 Residual modeling enabled: {residual_learner}.")
+run_click = st.button("Train & Predict", type="primary")
 
-# 在线滚动推理参数（不重新训练）
+# Online rolling inference (no retraining)
 col_r1, col_r2, col_r3 = st.columns([1,1,2])
 with col_r1:
-    horizon_days = st.selectbox("在线预测地平线（天）", [1, 3, 7], index=0)
+    horizon_days = st.selectbox("Online forecast horizon (days)", [1, 3, 7], index=0)
 with col_r2:
-    step_mode = st.selectbox("滚动步幅", ["块推进(=地平线)", "逐步推进(=1)"], index=0)
+    step_mode = st.selectbox("Rolling step", ["Block step (= horizon)", "Step-by-step (= 1)"], index=0)
 with col_r3:
-    st.caption("块推进速度快、误差不累积；逐步更平滑但更慢且误差递推。")
+    st.caption("Block step is faster with no error accumulation; step-by-step is smoother but slower and accumulates errors.")
+    allow_degrade = st.checkbox("Allow degrade (fallback to baseline if Required Core is missing)", value=False)
+    st.caption("When enabled: online inference falls back to a baseline if required features are missing; training/eval may also return baseline with degraded=True.")
 
-online_click = st.button("仅预测（在线滚动推理）", type="secondary")
+online_click = st.button("Predict only (online rolling)", type="secondary")
 
 if uploaded is None:
-    st.info("请先上传 CSV 文件。")
+    st.info("Upload a CSV file to begin.")
 else:
-    # 读取数据并做基本校验
+    # Load data
     try:
         df = pd.read_csv(uploaded)
     except Exception as e:
-        st.error(f"读取 CSV 失败：{e}")
+        st.error(f"Failed to read CSV: {e}")
         st.stop()
 
-    # 简单的列名推断（若不存在则给出提示）
+    # Basic column inference
     time_col = 'date' if 'date' in df.columns else df.columns[0]
-    if 'value' in df.columns:
-        value_col = 'value'
-    elif len(df.columns) > 1:
-        value_col = df.columns[1]
-    else:
-        value_col = df.columns[0]
 
-    # === 自动推断 feature_cols（单/多变量自适配）===
-    numeric_cols = [c for c in df.select_dtypes(include='number').columns if c != time_col]
-    feature_cols = [value_col] + [c for c in numeric_cols if c != value_col]
+    # More robust target selection: prefer numeric-like columns
+    def _numeric_profile(frame: pd.DataFrame, col: str):
+        s = frame[col]
+        if pd.api.types.is_numeric_dtype(s):
+            num = pd.to_numeric(s, errors="coerce")
+        else:
+            try:
+                ss = s.astype(str).str.replace(",", "", regex=False).str.strip()
+            except Exception:
+                ss = s
+            num = pd.to_numeric(ss, errors="coerce")
+        notna = float(num.notna().mean()) if len(num) else 0.0
+        miss = float(num.isna().mean()) if len(num) else 1.0
+        try:
+            var = float(num.var()) # type: ignore
+        except Exception:
+            var = 0.0
+        return num, notna, miss, var
+
+    candidates_all = [c for c in df.columns if c != time_col]
+    profiles = {c: _numeric_profile(df, c) for c in candidates_all}
+
+    # numeric-like: some parseable numeric values (can be sparse, but not all-NaN)
+    numeric_like = [c for c in candidates_all if profiles[c][1] > 0.01]
+
+    # Target candidates: prefer numeric-like to avoid categorical columns
+    value_candidates = numeric_like if numeric_like else candidates_all
+
+    # Default target: prefer 'value', else choose low-missing + higher-variance numeric column
+    if "value" in df.columns and "value" in numeric_like:
+        default_value_col = "value"
+    elif numeric_like:
+        default_value_col = sorted(numeric_like, key=lambda c: (profiles[c][2], -profiles[c][3]))[0]
+    else:
+        default_value_col = candidates_all[0] if candidates_all else df.columns[0]
+
+    def _fmt_col(c: str) -> str:
+        _notna = profiles[c][1]
+        _miss = profiles[c][2]
+        return f"{c}  (numeric={_notna:.0%}, missing={_miss:.0%})"
+
+    value_col = st.selectbox(
+        "Target column (value_col)",
+        options=value_candidates,
+        index=value_candidates.index(default_value_col) if default_value_col in value_candidates else 0,
+        format_func=_fmt_col,
+    )
+
+
+    # Guardrail: target must be numeric-like
+    try:
+        _num_rate = float(profiles[value_col][1])
+        if _num_rate < 0.5:
+            st.error(
+                f"Target '{value_col}' is not reliably numeric (numeric={_num_rate:.0%}). "
+                "Choose a numeric column as the prediction target."
+            )
+            if run_click or online_click:
+                st.stop()
+    except Exception:
+        pass
+
+    # Auto feature_cols (uni/multi-var): numeric-like candidates only
+    feature_cols = [value_col] + [c for c in numeric_like if c != value_col]
+
+    # Warning: missing values in target may trigger Required Core fail-fast
+    try:
+        y_num = profiles[value_col][0]
+        n_nan = int(y_num.isna().sum())
+        if n_nan > 0:
+            st.warning(
+                f"Target '{value_col}' has {n_nan} missing/unparseable values; "
+                "training may fail-fast under the Required Core policy."
+            )
+    except Exception:
+        pass
 
     missing_cols = [c for c in (time_col, value_col) if c not in df.columns]
     if missing_cols:
-        st.error(f"CSV 中缺少必要列：{missing_cols}")
+        st.error(f"CSV is missing required columns: {missing_cols}")
         st.stop()
 
-    st.subheader("📄 数据概览")
-    st.caption(f"时间列: {time_col} | 目标列: {value_col}")
+    st.subheader("📄 Data preview")
+    st.caption(f"Time column: {time_col} | Target: {value_col}")
     st.dataframe(df.head(10), use_container_width=True)
+    # Results area: cleared at training start, filled when training completes (or from cached snapshot).
+    results_container = st.empty()
 
     # ==========================
-    # 在线滚动推理（不训练，直接加载权重并按整段滚动预测）
+    # Online rolling inference (no retraining)
     # ==========================
     if online_click:
         config_pred = {
+            "device": device_choice,
             "default": {
                 "time_col": time_col,
                 "value_col": value_col,
-                "device": "cpu",
+                "device": device_choice,
                 "dtype": "float32",
             },
             "model_config": {
                 "Informer": {
                     "seq_len": 96,
                     "label_len": 48,
-                    "pred_len": 24,  # 实际滚动地平线由 horizon 覆盖
+                    "pred_len": 24,  # actual horizon is overridden by UI
                     "feature_cols": feature_cols,
                 }
             },
@@ -159,6 +493,7 @@ else:
                 "model_path": "artifacts/informer_model.pth",
                 "scaler_path": "artifacts/scaler.pkl",
                 "residual_model_path": "artifacts/residual_model.pkl",
+                "feature_cols_path": "artifacts/feature_cols.json",
             },
             "prediction": {
                 "rolling": {
@@ -166,35 +501,60 @@ else:
                     "step": None,
                     "mode": "overwrite",
                 }
+                ,
+                # degrade mode: when Required Core missing, fallback to baseline and mark degraded=True
+                "degrade": {"enabled": bool(allow_degrade), "mode": "naive_last"}
             }
         }
 
-        st.caption(f"使用特征列（按训练/预测固定顺序）：{feature_cols}")
+        st.caption(f"Feature columns (fixed order for train/predict): {feature_cols}")
 
-        # 地平线与步幅
-        horizon_steps = int(24 * horizon_days)  # 若是日频自行调整倍数
-        step_val = None if step_mode.startswith("块") else 1
+        # Horizon & step
+        horizon_steps = int(24 * horizon_days)  # adjust multiplier if your data is not hourly
+        step_val = None if step_mode.startswith("Block") else 1
 
         try:
+            if torch is None:
+                raise RuntimeError("Torch is not installed; cannot load InformerPredictor. Install: `pip install torch`")
+            from models.informer.predict import InformerPredictor  # lazy import (requires torch)
             predictor = InformerPredictor(config_pred)
         except Exception as e:
-            st.error("加载已训练模型失败（请先完成一次训练或检查 artifacts 路径）")
+            st.error("Failed to load trained model (train once first, or check dependencies/paths).")
             st.exception(e)
             st.stop()
 
-        with st.spinner("在线滚动推理中..."):
+        with st.spinner("Running online rolling inference..."):
             try:
                 merged = predictor.rolling_predict(df.copy(), horizon=horizon_steps, step=step_val, mode="overwrite")
             except Exception as e:
-                st.error("在线滚动推理失败")
+                st.error("Online rolling inference failed.")
                 st.exception(e)
                 st.stop()
 
-        # 计算与真值重叠区间的指标
+        # --- Degraded warning (platform-safety) ---
+        dblk = (config_pred.get("data", {}) or {})
+        if bool(dblk.get("degraded", False)):
+            missing_req = dblk.get("missing_required_core")
+            dropped_opt = dblk.get("dropped_optional_features")
+            reason = dblk.get("degraded_reason", "unknown")
+            mode = dblk.get("degraded_mode", "baseline")
+            st.error(
+                "⚠️ Prediction is degraded (degraded=True): features are missing/mismatched; "
+                "switched to a baseline predictor. Do not interpret as normal results."
+            )
+            st.caption(f"degraded_reason={reason} | degraded_mode={mode}")
+            if missing_req:
+                st.caption(f"Missing Required Core: {missing_req}")
+            if dropped_opt:
+                st.caption(f"Dropped optional features: {dropped_opt}")
+            if dblk.get("degraded_error"):
+                st.caption(f"Error: {dblk.get('degraded_error')}")
+
+        # Metrics on the overlapping (non-NaN) region
         merged = np.asarray(merged).reshape(-1)
         mask = ~np.isnan(merged)
         if mask.sum() == 0:
-            st.warning("没有得到有效的预测区间（数据太短或参数不匹配）")
+            st.warning("No valid prediction region (data too short or parameters mismatch).")
         else:
             y_true = pd.to_numeric(df.loc[mask, value_col], errors='coerce').to_numpy()
             y_hat = merged[mask]
@@ -202,39 +562,46 @@ else:
             denom = np.where(y_true == 0, np.nan, np.abs(y_true))
             mape = float(np.nanmean(np.abs((y_hat - y_true) / denom)) * 100.0)
 
-            st.subheader("⚡ 在线滚动推理 — 指标")
+            st.subheader("⚡ Online rolling inference — Metrics")
             c1, c2 = st.columns(2)
             with c1:
                 st.metric("Online RMSE", f"{rmse:.4f}")
             with c2:
                 st.metric("Online MAPE", f"{mape:.2f}%")
 
-            # 在线长序列
+            # Long-series payload
             online_long = {
                 "timestamps": pd.to_datetime(df[time_col]).astype(str).tolist(),
                 "y_true": pd.to_numeric(df[value_col], errors='coerce').astype(float).tolist(),
                 "yhat": merged.astype(float).tolist(),
+                "degraded": bool(dblk.get("degraded", False)),
+                "degraded_reason": dblk.get("degraded_reason"),
+                "degraded_mode": dblk.get("degraded_mode"),
+                "missing_required_core": dblk.get("missing_required_core"),
+                "dropped_optional_features": dblk.get("dropped_optional_features"),
             }
 
-            st.subheader("📈 在线滚动推理 — 长序列曲线")
-            vplot = load_plot_module()
-            fig_online = vplot.plot_results(
-                train_df=df[[time_col, value_col]] if time_col in df.columns and value_col in df.columns else pd.DataFrame(columns=[value_col]),
-                val_df_aligned=None,
-                test_df_aligned=None,
-                time_col=time_col,
-                value_col=value_col,
-                title=f"Online Rolling Inference (H={horizon_steps}, step={'H' if step_val is None else step_val})",
-                payload=None,
-                val_long=online_long,
-                test_long=None,
-                train_len=None,
-                val_len=None,
-                test_len=None,
+            st.subheader("📈 Online rolling inference — Curve")
+            online_plot_n = st.selectbox("Points to plot (last N)", ["1000", "2000", "4000", "ALL"], index=1, key="plot_n_online")
+            online_marker_every = st.number_input("Marker every k points", min_value=20, max_value=2000, value=200, step=20, key="plot_marker_online")
+            n_points = None if online_plot_n == "ALL" else int(online_plot_n)
+            if online_plot_n == "ALL":
+                st.warning("Rendering ALL points may be slow for large datasets.")
+            df_series = pd.DataFrame(
+                {
+                    "ts": pd.to_datetime(df[time_col], errors="coerce", utc=True),
+                    "true": pd.to_numeric(df[value_col], errors="coerce"),
+                    "pred": merged.astype(float),
+                }
             )
-            st.pyplot(fig_online)
+            render_true_pred(
+                df_series,
+                title=f"Online Rolling Inference (H={horizon_steps}, step={'H' if step_val is None else step_val})",
+                n_points=n_points,
+                marker_every=int(online_marker_every),
+            )
 
-            with st.expander("🔎 在线滚动推理明细（最近 200 条）", expanded=False):
+            with st.expander("🔎 Online details (last 200)", expanded=False):
                 view_df = pd.DataFrame({
                     time_col: online_long["timestamps"],
                     "y_true": online_long["y_true"],
@@ -242,12 +609,19 @@ else:
                 }).tail(200)
                 st.dataframe(view_df, use_container_width=True)
 
-            with st.expander("🧾 在线滚动推理明细（整段）", expanded=False):
-                full_df = _df_from_long(online_long, time_col)
+            with st.expander("🧾 Online details (full)", expanded=False):
+                full_df = df_from_long(online_long, time_col)
+                # annotate degraded columns for download/traceability
+                if bool(dblk.get("degraded", False)):
+                    full_df["degraded"] = True
+                    full_df["degraded_reason"] = str(dblk.get("degraded_reason"))
+                    full_df["degraded_mode"] = str(dblk.get("degraded_mode"))
+                    full_df["missing_required_core"] = str(dblk.get("missing_required_core"))
+                    full_df["dropped_optional_features"] = str(dblk.get("dropped_optional_features"))
                 st.dataframe(full_df, use_container_width=True)
                 try:
                     st.download_button(
-                        label="下载在线整段明细 CSV",
+                        label="Download online full details CSV",
                         data=full_df.to_csv(index=False).encode('utf-8'),
                         file_name="online_long.csv",
                         mime=MIME_CSV,
@@ -255,435 +629,251 @@ else:
                 except Exception:
                     pass
     # ==========================
-    # 训练 + 预测 + 统一绘图（6/2/2 + 长序列）
+    # Train + predict + unified plotting (6/2/2 + long series)
     # ==========================
     if run_click:
-        # 训练 + 预测 + 统一绘图（6/2/2 + 长序列）
+        # Train + predict + unified plotting (6/2/2 + long series)
+        try:
+            results_container.empty()
+        except Exception:
+            pass
+        st.session_state["is_training"] = True
+        _proj_dir = snapshot_mod.PROJECT_DIR
+        _art_dir = _proj_dir / "artifacts"
+        _out_dir = _proj_dir / "output"
+        try:
+            _art_dir.mkdir(parents=True, exist_ok=True)
+            _out_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
         config = {
             "model": {"name": model_name},
             "default": {
                 "time_col": time_col,
                 "value_col": value_col,
+                "device": device_choice,
+                "dtype": "float32",
+            },
+            "visualization": {
+                # App handles plotting; disable pipeline-side Matplotlib helpers by default.
+                "pipeline_plot": False,
+                "build_continuous": False,
+            },
+            # Target transform: compress volatility during training (applied for deep models in data prep)
+            "target_transform": {
+                "enabled": model_name in ("informer", "lstm"),
+                "method": "log1p",
+            },
+            # Post-hoc calibration: fit affine (a,b) on val to slightly reduce RMSE without hurting MAPE.
+            "post_calibration": {
+                "enabled": True,
+                "a_clip": [0.8, 1.2],
+                "b_clip_ratio": 0.1,
+                "ridge": 1e-6,
+                "mape_guard_rel": 1.02,
             },
             "model_config": {
                 "Informer": {
                     "seq_len": 96,
                     "label_len": 48,
-                    "pred_len": 24,
+                    # Shorter training horizon reduces over-smoothing and improves generalization;
+                    # long-horizon is handled via rolling inference / dense 1-step outputs.
+                    "pred_len": 8,
+                    "auto_feature_cols": True,
+                    "lock_feature_order": True,
+                    # Initial candidate set (final set will be train-only selected and frozen).
                     "feature_cols": feature_cols,
+                    # Train-only feature selection (MI + RF importance)
+                    "feature_selection": {
+                        "missing_rate_threshold": 0.4,
+                        "low_variance_threshold": 1e-8,
+                        "redundant_corr_threshold": 0.95,
+                        "max_features": None,
+                        "leakage_name_patterns": ["label", "target", "future", "t+", "lead", "yhat", "predict"],
+                        "safe_default_cols": ["month", "day_of_month", "day_of_week", "hour", "day_of_year"],
+                        # Tiering (generic missing-feature solution)
+                        "required_core_cols": [],
+                        "repairable_core_cols": ["month", "day_of_month", "day_of_week", "hour", "day_of_year"],
+                        # Extra core cols can be configured here if needed
+                        "core_cols": [],
+                    },
                 }
             },
             "artifacts": {
-                "model_path": "artifacts/informer_model.pth",
-                "scaler_path": "artifacts/scaler.pkl",
-                "residual_model_path": "artifacts/residual_model.pkl",
-                "y_scaler_path": "artifacts/value_scaler.pkl",
+                "model_path": str(_art_dir / "informer_model.pth"),
+                "scaler_path": str(_art_dir / "scaler.pkl"),
+                "residual_model_path": str(_art_dir / "residual_model.pkl"),
+                "y_scaler_path": str(_art_dir / "value_scaler.pkl"),
+                "feature_cols_path": str(_art_dir / "feature_cols.json"),
+                "feature_report_path": str(_art_dir / "feature_report.json"),
             }
         }
-        # 保证新旧配置键都能被 pipeline 识别（放在定义 config 之后）
-        config.setdefault("model", {})["name"] = model_name
-        config["model_type"] = model_name
 
-        # 为注册表模型（如 arima）提供原始 DataFrame（pipeline 会优先读取这里）
-        config.setdefault("data", {})
-        config["data"]["dataframe"] = df.copy()
-
-        def _prepare_data_into_config(src_df, cfg, feature_cols):
-            """Prepare cfg['data'] for single-arg pipeline: 6:2:2 split + scaler fit/transform."""
-            import numpy as _np
-            import pandas as _pd
-
-            # Robust StandardScaler import with a minimal fallback implementation
-            try:
-                from sklearn.preprocessing import StandardScaler as _RealStandardScaler
-                SSCls = _RealStandardScaler
-            except Exception:
-                class _MiniStandardScaler:
-                    def fit(self, X):
-                        X = _np.asarray(X, dtype=_np.float32)
-                        self.mean_ = X.mean(axis=0)
-                        self.scale_ = X.std(axis=0)
-                        self.scale_[self.scale_ == 0] = 1.0
-                        self.n_features_in_ = X.shape[1]
-                        return self
-                    def transform(self, X):
-                        X = _np.asarray(X, dtype=_np.float32)
-                        return (X - self.mean_) / self.scale_
-                    def inverse_transform(self, X):
-                        X = _np.asarray(X, dtype=_np.float32)
-                        return X * self.scale_ + self.mean_
-                SSCls = _MiniStandardScaler
-
-            time_col = cfg.get('default', {}).get('time_col', 'date')
-            value_col = cfg.get('default', {}).get('value_col', 'value')
-
-            df2 = src_df.copy()
-            # ensure sorting by time if time_col exists
-            if time_col in df2.columns:
+        # Residual modeling (combo models): configure via UI.
+        _res_choice = str(residual_learner or "none").strip().lower()
+        if _res_choice in ("linear", "xgboost"):
+            rm_cfg = {
+                "enabled": True,
+                "model_type": "ridge" if _res_choice == "linear" else "xgboost",
+            }
+            config["residual_modeling"] = rm_cfg
+            # Avoid double-correction for Informer: disable its internal residual + post_calibration
+            if model_name == "informer":
                 try:
-                    df2[time_col] = _pd.to_datetime(df2[time_col])
-                    df2 = df2.sort_values(time_col)
+                    config.setdefault("model_config", {}).setdefault("Informer", {})["use_residual"] = False
+                except Exception:
+                    pass
+                try:
+                    config.setdefault("post_calibration", {})["enabled"] = False
                 except Exception:
                     pass
 
-            n = len(df2)
-            t = int(n * 0.6); v = int(n * 0.2); te = n - t - v
-            train_df = df2.iloc[:t].copy()
-            val_df   = df2.iloc[t:t+v].copy()
-            test_df  = df2.iloc[t+v:].copy()
-
-            # guard: keep only existing feature columns
-            feat_cols = [c for c in list(feature_cols) if c in df2.columns]
-
-            # fit scaler on train
-            scaler = SSCls()
-            if len(feat_cols) == 0:
-                raise ValueError("No valid feature columns found for scaling.")
-            scaler.fit(train_df[feat_cols].astype('float32'))
-
-            # transform helper
-            def _tf(d):
-                out = d.copy()
-                out[feat_cols] = scaler.transform(d[feat_cols].astype('float32'))
-                return out
-
-            cfg.setdefault('data', {})
-            cfg['data']['train_df_sc'] = _tf(train_df)
-            cfg['data']['val_df_sc']   = _tf(val_df)
-            cfg['data']['test_df_sc']  = _tf(test_df)
-            cfg['data']['split'] = {"train_len": t, "val_len": v, "test_len": te}
-            cfg['data']['all_feature_cols'] = list(feat_cols)
-            cfg.setdefault('artifacts', {})['scaler'] = scaler
-
-        def _normalize_results(res, cfg, src_df):
-            """统一把 pipeline 返回值规整为 {'status','metrics','data','artifacts'} 结构。支持:
-            - (model, result_df)
-            - {'status': 'ok', 'metrics': ..., 'data': {...}}
-            并从 cfg['data'] 中提取 val_long/test_long/split 信息。
-            """
-            out = {"status": "ok", "metrics": {}, "data": {}, "artifacts": cfg.get("artifacts", {})}
-            data_blk = cfg.get("data", {}) or {}
-
-            def _extract_metrics_from_cfg(_d: dict) -> dict:
-                if not isinstance(_d, dict):
-                    return {}
-                out_m = {}
-                # validation candidates
-                for k in ("metrics_val", "val_metrics", "validation_metrics", "metrics_validation"):
-                    vm = _d.get(k)
-                    if isinstance(vm, dict) and vm:
-                        out_m["validation"] = vm
-                        break
-                # test candidates
-                for k in ("metrics_test", "test_metrics", "testing_metrics", "metrics_testing"):
-                    tm = _d.get(k)
-                    if isinstance(tm, dict) and tm:
-                        out_m["test"] = tm
-                        break
-                return out_m
-
-            def _extract_metrics_from_root(_cfg: dict) -> dict:
-                """
-                支持从 cfg['metrics'] 读取扁平键：val_rmse/val_mape/test_rmse/test_mape
-                并映射为 {'validation': {'rmse','mape'}, 'test': {'rmse','mape'}}
-                """
-                if not isinstance(_cfg, dict):
-                    return {}
-                root_m = _cfg.get("metrics") or {}
-                if not isinstance(root_m, dict):
-                    return {}
-                out_m = {}
-                val_m = {}
-                test_m = {}
-                # validation
-                if "val_rmse" in root_m: val_m["rmse"] = root_m.get("val_rmse")
-                if "val_mape" in root_m: val_m["mape"] = root_m.get("val_mape")
-                if "val_mape_safe" in root_m: val_m["mape_safe"] = root_m.get("val_mape_safe")
-                if val_m:
-                    out_m["validation"] = val_m
-                # test
-                if "test_rmse" in root_m: test_m["rmse"] = root_m.get("test_rmse")
-                if "test_mape" in root_m: test_m["mape"] = root_m.get("test_mape")
-                if "test_mape_safe" in root_m: test_m["mape_safe"] = root_m.get("test_mape_safe")
-                if test_m:
-                    out_m["test"] = test_m
-                return out_m
-
-            # 1) 标准 dict 返回
-            if isinstance(res, dict):
-                out.update(res)
-                out.setdefault("data", {})
-
-                # 透传长载荷（兼容旧逻辑）
-                if "val_long" not in out["data"] and "val_long" in data_blk:
-                    out["data"]["val_long"] = data_blk.get("val_long")
-                if "test_long" not in out["data"] and "test_long" in data_blk:
-                    out["data"]["test_long"] = data_blk.get("test_long")
-
-                # ✅ 新增：透传 dense（对齐好的整段 DataFrame）
-                if "val_dense" not in out["data"] and "val_dense" in data_blk:
-                    out["data"]["val_dense"] = data_blk.get("val_dense")
-                if "test_dense" not in out["data"] and "test_dense" in data_blk:
-                    out["data"]["test_dense"] = data_blk.get("test_dense")
-
-                # split 信息兜底
-                if "split" not in out["data"]:
-                    n = len(src_df)
-                    t = int(n * 0.6)
-                    v = int(n * 0.2)
-                    out["data"]["split"] = {"train_len": t, "val_len": v, "test_len": n - t - v}
-
-                # backfill metrics from cfg['data'] if missing/partial
-                cfg_metrics = _extract_metrics_from_cfg(data_blk)
-                if cfg_metrics:
-                    out.setdefault("metrics", {})
-                    # don't overwrite existing sections
-                    for sect, md in cfg_metrics.items():
-                        if sect not in out["metrics"] or not out["metrics"][sect]:
-                            out["metrics"][sect] = md
-                # 新增：从 cfg['metrics'] 扁平键提取
-                root_metrics = _extract_metrics_from_root(cfg)
-                if root_metrics:
-                    out.setdefault("metrics", {})
-                    for sect, md in root_metrics.items():
-                        if sect not in out["metrics"] or not out["metrics"][sect]:
-                            out["metrics"][sect] = md
-                return out
-
-            # 2) 二元组返回： (model, result_df)
-            if isinstance(res, (tuple, list)) and len(res) >= 1:
-                # 从 cfg['data'] 里拿载荷
-                out["data"]["val_long"]  = data_blk.get("val_long")
-                out["data"]["test_long"] = data_blk.get("test_long")
-                # ✅ 新增：dense
-                out["data"]["val_dense"] = data_blk.get("val_dense")
-                out["data"]["test_dense"] = data_blk.get("test_dense")
-
-                # split 兜底
-                n = len(src_df)
-                t = int(n * 0.6)
-                v = int(n * 0.2)
-                out["data"]["split"] = {"train_len": t, "val_len": v, "test_len": n - t - v}
-
-                # also try to attach metrics from cfg['data']
-                cfg_metrics = _extract_metrics_from_cfg(data_blk)
-                if cfg_metrics:
-                    out["metrics"] = cfg_metrics
-                # 新增：从 cfg['metrics'] 扁平键提取
-                root_metrics = _extract_metrics_from_root(cfg)
-                if root_metrics:
-                    out.setdefault("metrics", {})
-                    for sect, md in root_metrics.items():
-                        if sect not in out["metrics"] or not out["metrics"][sect]:
-                            out["metrics"][sect] = md
-                return out
-
-            # 3) 兜底
-            cfg_metrics = _extract_metrics_from_cfg(data_blk)
-            if cfg_metrics:
-                out["metrics"] = cfg_metrics
-            # 新增：从 cfg['metrics'] 扁平键提取
-            root_metrics = _extract_metrics_from_root(cfg)
-            if root_metrics:
-                out.setdefault("metrics", {})
-                for sect, md in root_metrics.items():
-                    if sect not in out["metrics"] or not out["metrics"][sect]:
-                        out["metrics"][sect] = md
-            out["status"] = "error"
-            out["message"] = "Unknown pipeline return type"
-            return out
-
-        with st.spinner("训练与预测中，请稍候..."):
+        # XGBoost: load hyperparameters from configs.yaml (if present).
+        # - used by the standalone XGBoost model
+        # - also used as residual learner when residual_learner == "xgboost"
+        if model_name == "xgboost" or _res_choice == "xgboost":
             try:
-                # 兼容两种 pipeline 签名： (df, config) 或 (config)
-                import inspect  # local import to avoid top-level dependency
-                sig = inspect.signature(run_train_predict_pipeline)
-                params = list(sig.parameters.values())
-                # 如果 pipeline 只有一个参数（config），先把数据写入 cfg['data']
-                if len(params) < 2:
-                    _prepare_data_into_config(df.copy(), config, feature_cols)
-                # 根据 pipeline 的签名动态组装参数
-                call_args = (df.copy(), config) if len(params) >= 2 else (config,)
-                raw_results = run_train_predict_pipeline(*call_args)  # type: ignore[call-arg]
-                results = _normalize_results(raw_results, config, df)
-            except Exception as e:
-                st.error("pipeline 运行失败")
-                st.exception(e)
-                st.stop()
+                xgb_hp = _load_xgboost_hparams_from_configs_yaml()
+                if isinstance(xgb_hp, dict) and xgb_hp:
+                    config.setdefault("model_config", {})["XGBoost"] = xgb_hp
+            except Exception:
+                pass
+        # Dedicated artifact paths: avoid overwriting other models.
+        try:
+            if model_name == "xgboost":
+                config.setdefault("artifacts", {})["xgboost_model_path"] = str(_art_dir / "xgboost_model.json")
+        except Exception:
+            pass
+        try:
+            if _res_choice == "xgboost":
+                config.setdefault("artifacts", {})["xgboost_residual_model_path"] = str(_art_dir / "xgboost_residual_model.json")
+        except Exception:
+            pass
+
+        config["device"] = device_choice
+        config.setdefault("callbacks", {})
+
+        # Keep back-compat keys for the pipeline
+        config.setdefault("model", {})["name"] = model_name
+        config["model_type"] = model_name
+
+        # Provide raw DataFrame for registry models (e.g. arima)
+        config.setdefault("data", {})
+        config["data"]["dataframe"] = df.copy()
+        # Pipeline call + normalize + snapshot are handled in services.pipeline (keeps this file small).
+
+        # Progress UI (training/pipeline/app)
+        _status = st.empty()
+        _bar = st.progress(0.0)
+
+        def _set_progress(pct: float, msg: str):
+            try:
+                pct = float(pct)
+            except Exception:
+                pct = 0.0
+            pct = 0.0 if pct < 0 else (1.0 if pct > 1 else pct)
+            try:
+                _bar.progress(pct)
+            except Exception:
+                try:
+                    _bar.progress(int(pct * 100))
+                except Exception:
+                    pass
+            try:
+                _status.info(msg)
+            except Exception:
+                pass
+
+        # Pipeline/training callback (called from deep modules)
+        def _progress_cb(stage: str = "pipeline", pct: Optional[float] = None, **info):
+            try:
+                # IMPORTANT: avoid calling Streamlit APIs inside the training loop.
+                # Streamlit may interrupt long runs at st.* yield points if a rerun is requested,
+                # which looks like "training stops at epoch k/10". We only update UI at coarse pipeline stages.
+                if stage == "train":
+                    return
+                if pct is None:
+                    return
+                _set_progress(float(pct), f"{stage}: {info.get('msg') or ''}".strip())
+            except Exception:
+                pass
+
+        config["callbacks"]["progress"] = _progress_cb
+        _set_progress(0.02, "Starting pipeline...")
+        try:
+            pipeline_mod = load_pipeline_module()
+            results = pipeline_mod.run_pipeline_and_update_state(
+                df=df.copy(),
+                config=config,
+                feature_cols=feature_cols,
+                uploaded_name=getattr(uploaded, "name", None),
+                model_name=model_name,
+                time_col=time_col,
+                value_col=value_col,
+                allow_degrade=bool(allow_degrade),
+                progress_cb=_progress_cb,
+            )
+            _set_progress(0.99, "Rendering UI...")
+        except Exception as e:
+            st.error("Pipeline failed.")
+            st.exception(e)
+            st.stop()
+        finally:
+            # Always release training flag even if the pipeline raised.
+            try:
+                st.session_state["is_training"] = False
+            except Exception:
+                pass
 
         status = results.get("status", "error")
         if status not in ("ok", "success"):
-            st.error(results.get("message", "训练/预测失败"))
+            st.error(results.get("message", "Training/prediction failed."))
             tb = results.get("traceback")
             if tb:
                 st.code(tb)
             st.stop()
 
-        # 指标展示（若没有则显示占位）
-        metrics = results.get("metrics", {}) or {}
-        val_metrics = metrics.get("validation", {}) or {}
-        test_metrics = metrics.get("test", {}) or {}
-
-        # 兼容：如果是扁平键（val_rmse/val_mape/test_rmse/test_mape），转成分组结构
-        if (not val_metrics) and any(k in metrics for k in ("val_rmse", "val_mape", "val_mape_safe")):
-            val_metrics = {
-                "rmse": metrics.get("val_rmse"),
-                "mape": metrics.get("val_mape"),
-                "mape_safe": metrics.get("val_mape_safe"),
-            }
-        if (not test_metrics) and any(k in metrics for k in ("test_rmse", "test_mape", "test_mape_safe")):
-            test_metrics = {
-                "rmse": metrics.get("test_rmse"),
-                "mape": metrics.get("test_mape"),
-                "mape_safe": metrics.get("test_mape_safe"),
-            }
-
-        def _fmt(x, pct=False, safe=False, metrics=None):
-            # 如果需要从 metrics 里取（比如 mape_safe 优先），在这里替换 x
-            if safe and isinstance(metrics, dict):
-                if metrics.get("mape_safe") is not None:
-                    x = metrics.get("mape_safe")
-                elif metrics.get("mape") is not None:
-                    x = metrics.get("mape")
-            if x is None:
-                return "—"
-            try:
-                xv = float(x)
-                if pct:
-                    xv = xv * 100.0  # 将比例转为百分数
-                    return f"{xv:.2f}%"
-                return f"{xv:.4f}"
-            except Exception:
-                return str(x)
-
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            st.metric("Val RMSE", _fmt(val_metrics.get("rmse")))
-        with c2:
-            st.metric("Val MAPE", _fmt(None, pct=True, safe=True, metrics=val_metrics))
-        with c3:
-            st.metric("Test RMSE", _fmt(test_metrics.get("rmse")))
-        with c4:
-            st.metric("Test MAPE", _fmt(None, pct=True, safe=True, metrics=test_metrics))
-
-        # 若 artifacts 中包含 RF 最佳超参，则单独展示
-        _arts = results.get("artifacts", {}) or {}
-        _rf_params = _arts.get("randomforest_params") or _arts.get("best_params") or _arts.get("rf_best_params")
-        if _rf_params and model_name == "randomforest":
-            with st.expander("🧠 RandomForest 最佳超参（Optuna）", expanded=False):
-                st.json(_rf_params)
-
-        # 切分信息
-        data_blob = results.get("data", {}) or {}
-        split_info = data_blob.get("split", {}) or {}
-        train_len = _as_int(split_info.get("train_len"))
-        val_len = _as_int(split_info.get("val_len"))
-        test_len = _as_int(split_info.get("test_len"))
-
-        if train_len is not None and val_len is not None and test_len is not None:
-            t, v, te = int(train_len), int(val_len), int(test_len)
-            total = t + v + te
-            if total > 0:
-                st.caption(f"数据切分：train={t}, val={v}, test={te}（比例约为 {t/total:.2f}/{v/total:.2f}/{te/total:.2f} ）")
-            else:
-                st.caption(f"数据切分：train={t}, val={v}, test={te}")
-
-        # 长序列载荷和 dense 载荷（如有）
-        val_long = data_blob.get("val_long")
-        test_long = data_blob.get("test_long")
-        val_dense = data_blob.get("val_dense") if "val_dense" in data_blob else None
-        test_dense = data_blob.get("test_dense") if "test_dense" in data_blob else None
-
-        # 明细表（整段）：优先 dense DataFrame，如果有
-        def _coerce_dense(d):
-            if d is None:
-                return None
-            try:
-                if isinstance(d, pd.DataFrame):
-                    return d
-                return pd.DataFrame(d)
-            except Exception:
-                return None
-
-        val_df_aligned = _coerce_dense(val_dense)
-        test_df_aligned = _coerce_dense(test_dense)
-
-        # 兼容：若 dense 不可用，则回退到 long（字典）形式
-        if val_df_aligned is None:
-            val_long_df = _df_from_long(val_long, time_col)
-        else:
-            val_long_df = val_df_aligned.copy()
-        if test_df_aligned is None:
-            test_long_df = _df_from_long(test_long, time_col)
-        else:
-            test_long_df = test_df_aligned.copy()
-
-        # 训练段 DataFrame（用于四线图背景）
-        if train_len is not None and train_len > 0:
-            _train_df_for_plot = df.iloc[:train_len][[time_col, value_col]]
-        else:
-            _train_df_for_plot = df[[time_col, value_col]]
-
-        # 绘图（整段）。注意：不再传递不存在的形参 val_dense/test_dense；
-        # 将 dense 作为对齐好的 DataFrame 直接通过 val_df_aligned/test_df_aligned 传入。
-        st.subheader("📈 预测结果（整段）")
-        vplot = load_plot_module()
+        # Stable UI path: render from minimal cached snapshot so plot controls survive reruns.
         try:
-            # 将 dense 直接作为对齐好的 DataFrame 传入
-            fig = vplot.plot_results(
-                train_df=_train_df_for_plot,
-                val_df_aligned=val_dense if isinstance(val_dense, pd.DataFrame) and not val_dense.empty else None,
-                test_df_aligned=test_dense if isinstance(test_dense, pd.DataFrame) and not test_dense.empty else None,
-                time_col=time_col,
-                value_col=value_col,
-                title="Forecast Results（整段）",
-                payload=None,           # 如需额外信息（split等）也可以放到 payload
-                val_long=val_long,      # 作为后备兜底（当前我们已走 dense，不会用到）
-                test_long=test_long,
-                train_len=train_len,
-                val_len=val_len,
-                test_len=test_len,
+            cached = st.session_state.get("last_results")
+            if not isinstance(cached, dict):
+                cached = cacheable_results(results)
+            meta = st.session_state.get("last_meta") if isinstance(st.session_state.get("last_meta"), dict) else {}
+            with results_container.container():
+                _render_cached_summary(
+                    cached,
+                    model_name=str(meta.get("model_name") or model_name), # type: ignore
+                    time_col=str(meta.get("time_col") or time_col), # type: ignore
+                    value_col=str(meta.get("value_col") or value_col), # type: ignore
+                )
+        except Exception as _e:
+            st.error(f"Failed to render results: {_e}")
+        finally:
+            st.session_state["is_training"] = False
+        st.stop()
+
+    # ==========================
+    # Cached results (state-driven; survives reruns)
+    # ==========================
+    if st.session_state.get("last_results") is None:
+        snap = load_last_results_json()
+        if isinstance(snap, dict) and isinstance(snap.get("results"), dict):
+            st.session_state["last_results"] = snap.get("results")
+            st.session_state["last_meta"] = snap.get("meta") if isinstance(snap.get("meta"), dict) else {}
+            st.session_state["last_results_source"] = "snapshot"
+
+    cached = st.session_state.get("last_results")
+    if isinstance(cached, dict) and not bool(st.session_state.get("is_training", False)):
+        meta = st.session_state.get("last_meta") if isinstance(st.session_state.get("last_meta"), dict) else {}
+        with results_container.container():
+            _render_cached_summary(
+                cached,
+                model_name=str(meta.get("model_name") or model_name), # type: ignore
+                time_col=str(meta.get("time_col") or time_col), # type: ignore
+                value_col=str(meta.get("value_col") or value_col), # type: ignore
             )
-            st.pyplot(fig)
-        except Exception as e:
-            st.error("绘图失败")
-            st.exception(e)
 
-        # 明细导出（优先 dense，其次 long）
-        with st.expander("🧾 验证集明细（整段）", expanded=False):
-            val_long_df = _df_from_dense_for_display(val_dense, time_col) \
-                          if isinstance(val_dense, pd.DataFrame) else _df_from_long(val_long, time_col)
-            if not val_long_df.empty:
-                st.dataframe(val_long_df, use_container_width=True)
-                try:
-                    st.download_button(
-                        label="下载验证整段明细 CSV",
-                        data=val_long_df.to_csv(index=False).encode('utf-8'),
-                        file_name="val_dense.csv" if isinstance(val_dense, pd.DataFrame) else "val_long.csv",
-                        mime=MIME_CSV,
-                    )
-                except Exception:
-                    pass
-            else:
-                st.info("暂无验证整段明细。")
-
-        with st.expander("🧾 测试集明细（整段）", expanded=False):
-            test_long_df = _df_from_dense_for_display(test_dense, time_col) \
-                           if isinstance(test_dense, pd.DataFrame) else _df_from_long(test_long, time_col)
-            if not test_long_df.empty:
-                st.dataframe(test_long_df, use_container_width=True)
-                try:
-                    st.download_button(
-                        label="下载测试整段明细 CSV",
-                        data=test_long_df.to_csv(index=False).encode('utf-8'),
-                        file_name="test_dense.csv" if isinstance(test_dense, pd.DataFrame) else "test_long.csv",
-                        mime=MIME_CSV,
-                    )
-                except Exception:
-                    pass
-            else:
-                st.info("暂无测试整段明细。")
-
-        # 工件路径展示（有就展示）
-        with st.expander("🧳 Artifacts", expanded=False):
-            st.json(results.get("artifacts", {}))
+    if st.button("Clear cached results", type="secondary", key="clear_cached_results"):
+        st.session_state["last_results"] = None
+        st.session_state["last_meta"] = None
+        st.session_state["last_results_source"] = None
