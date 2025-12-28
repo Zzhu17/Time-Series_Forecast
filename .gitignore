@@ -1,0 +1,32 @@
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Environments
+.venv/
+venv/
+.env/
+
+# Project outputs (do not version training artifacts)
+Project/artifacts/
+Project/output/
+Project/logs/
+logs/
+
+# Common ML artifacts (keep them in artifacts/, not git)
+*.pth
+*.pt
+*.ckpt
+*.pkl
+*.joblib
+*.onnx
