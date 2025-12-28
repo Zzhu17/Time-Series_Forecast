@@ -30,3 +30,7 @@ logs/
 *.pkl
 *.joblib
 *.onnx
+
+# Local tool temp/cache
+.tmp/
+.cache/
