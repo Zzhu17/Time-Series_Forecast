@@ -19,6 +19,12 @@ This repo generates training outputs locally (models, scalers, plots, snapshots)
 
 If you previously committed large files (e.g. `Project/artifacts/informer_model.pth`), they were removed from tracking and added to `.gitignore`.
 
+## Development
+
+- Install lightweight dev tools: `pip install -r requirements-dev.txt`
+- Run fast tests (no heavy deps required): `PYTHONPATH=Project pytest -q tests`
+- CI runs on GitHub Actions (`.github/workflows/ci.yml`) with the same command set.
+
 ### Optional: completely remove large files from git history
 
 If you want to shrink the remote repository (history rewrite required):
