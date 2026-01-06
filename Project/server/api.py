@@ -18,7 +18,6 @@ from server.registry import register_model, promote_model, get_model as get_mode
 from server.logging_utils import setup_json_logger, log_json
 from services.pipeline_loader import load_pipeline_module
 from services.snapshot import cacheable_results
-from ui.model_config import load_xgboost_hparams_from_configs_yaml
 
 LOGGER = setup_json_logger()
 app = FastAPI(title="TS Forecast API", version="0.1.0")
@@ -199,123 +198,6 @@ def _auto_feature_cols(
         feats.append(name)
 
     return feats if feats else [value_col]
-
-
-def _numeric_like_features(df: pd.DataFrame, time_col: str, value_col: str) -> List[str]:
-    """
-    Collect numeric-like columns (match Streamlit auto feature behavior): target + all numeric-like (not time_col).
-    """
-    out = [value_col]
-    for c in df.columns:
-        if c in (time_col, value_col):
-            continue
-        try:
-            col = pd.to_numeric(df[c], errors="coerce")
-        except Exception:
-            continue
-        notna = float(col.notna().mean()) if len(col) else 0.0
-        if notna > 0.01:  # at least some numeric content
-            out.append(c)
-    return out
-
-
-def _build_streamlit_like_config(
-    *,
-    df: pd.DataFrame,
-    feature_cols: List[str],
-    model_name: str,
-    residual_cfg: dict | None,
-    device_choice: str,
-    time_col: str,
-    value_col: str,
-):
-    art_dir = Path(__file__).resolve().parents[1] / "artifacts"
-    config = {
-        "model": {"name": model_name},
-        "default": {
-            "time_col": time_col,
-            "value_col": value_col,
-            "device": device_choice,
-            "dtype": "float32",
-        },
-        "visualization": {
-            "pipeline_plot": False,
-            "build_continuous": False,
-        },
-        "target_transform": {
-            "enabled": model_name.lower() in ("informer", "lstm"),
-            "method": "log1p",
-        },
-        "post_calibration": {
-            "enabled": True,
-            "a_clip": [0.8, 1.2],
-            "b_clip_ratio": 0.1,
-            "ridge": 1e-6,
-            "mape_guard_rel": 1.02,
-        },
-        "model_config": {
-            "Informer": {
-                "seq_len": 96,
-                "label_len": 48,
-                "pred_len": 8,
-                "auto_feature_cols": True,
-                "lock_feature_order": True,
-                "feature_cols": feature_cols,
-                "feature_selection": {
-                    "missing_rate_threshold": 0.4,
-                    "low_variance_threshold": 1e-8,
-                    "redundant_corr_threshold": 0.95,
-                    "max_features": None,
-                    "leakage_name_patterns": ["label", "target", "future", "t+", "lead", "yhat", "predict"],
-                    "safe_default_cols": ["month", "day_of_month", "day_of_week", "hour", "day_of_year"],
-                    "required_core_cols": [],
-                    "repairable_core_cols": ["month", "day_of_month", "day_of_week", "hour", "day_of_year"],
-                    "core_cols": [],
-                },
-            }
-        },
-        "artifacts": {
-            "model_path": str(art_dir / "informer_model.pth"),
-            "scaler_path": str(art_dir / "scaler.pkl"),
-            "residual_model_path": str(art_dir / "residual_model.pkl"),
-            "y_scaler_path": str(art_dir / "value_scaler.pkl"),
-            "feature_cols_path": str(art_dir / "feature_cols.json"),
-            "feature_report_path": str(art_dir / "feature_report.json"),
-        },
-        "callbacks": {},
-        "device": device_choice,
-        "data": {"dataframe": df.copy()},
-        "model_type": model_name,
-    }
-
-    # Residual modeling
-    if residual_cfg:
-        config["residual_modeling"] = residual_cfg
-        if model_name.lower() == "informer":
-            config.setdefault("model_config", {}).setdefault("Informer", {})["use_residual"] = False
-            config.setdefault("post_calibration", {})["enabled"] = False
-
-    # XGBoost hyperparameters and artifact paths
-    res_choice = residual_cfg.get("model_type") if isinstance(residual_cfg, dict) else None
-    if model_name.lower() == "xgboost" or str(res_choice).lower() == "xgboost":
-        try:
-            xgb_hp = load_xgboost_hparams_from_configs_yaml()
-            if isinstance(xgb_hp, dict) and xgb_hp:
-                config.setdefault("model_config", {})["XGBoost"] = xgb_hp
-        except Exception:
-            pass
-    try:
-        if model_name.lower() == "xgboost":
-            config.setdefault("artifacts", {})["xgboost_model_path"] = str(art_dir / "xgboost_model.json")
-    except Exception:
-        pass
-    try:
-        if str(res_choice).lower() == "xgboost":
-            config.setdefault("artifacts", {})["xgboost_residual_model_path"] = str(art_dir / "xgboost_residual_model.json")
-    except Exception:
-        pass
-
-    return config
 
 
 # ------------------------
@@ -662,7 +544,6 @@ async def train_file_streamlit(
     horizon: int = Form(24),
     feature_cols: Optional[str] = Form(None),
     residual_modeling: Optional[str] = Form(None),
-    device: str = Form("cpu"),
     allow_degrade: bool = Form(False),
 ):
     """
@@ -696,7 +577,7 @@ async def train_file_streamlit(
         except Exception:
             rm_cfg = None
     if not fc_list:
-        fc_list = _numeric_like_features(df.copy(), time_col, value_col)
+        fc_list = _auto_feature_cols(df.copy(), time_col, value_col)
 
     PipelineRunModel(
         time_col=time_col,
@@ -706,15 +587,65 @@ async def train_file_streamlit(
         residual_modeling=rm_cfg,
     )
 
-    config = _build_streamlit_like_config(
-        df=df.copy(),
-        feature_cols=fc_list,
-        model_name=model_name,
-        residual_cfg=rm_cfg,
-        device_choice=device,
-        time_col=time_col,
-        value_col=value_col,
-    )
+    art_dir = Path(__file__).resolve().parents[1] / "artifacts"
+    config = {
+        "model": {"name": model_name},
+        "model_type": model_name,
+        "default": {
+            "time_col": time_col,
+            "value_col": value_col,
+            "device": "cpu",
+            "dtype": "float32",
+        },
+        "visualization": {"pipeline_plot": False, "build_continuous": False},
+        "target_transform": {
+            "enabled": model_name.lower() in ("informer", "lstm"),
+            "method": "log1p",
+        },
+        "post_calibration": {
+            "enabled": True,
+            "a_clip": [0.8, 1.2],
+            "b_clip_ratio": 0.1,
+            "ridge": 1e-6,
+            "mape_guard_rel": 1.02,
+        },
+        "model_config": {
+            "Informer": {
+                "seq_len": 96,
+                "label_len": 48,
+                "pred_len": 8,
+                "auto_feature_cols": True,
+                "lock_feature_order": True,
+                "feature_cols": fc_list,
+                "feature_selection": {
+                    "missing_rate_threshold": 0.4,
+                    "low_variance_threshold": 1e-8,
+                    "redundant_corr_threshold": 0.95,
+                    "max_features": None,
+                    "leakage_name_patterns": ["label", "target", "future", "t+", "lead", "yhat", "predict"],
+                    "safe_default_cols": ["month", "day_of_month", "day_of_week", "hour", "day_of_year"],
+                    "required_core_cols": [],
+                    "repairable_core_cols": ["month", "day_of_month", "day_of_week", "hour", "day_of_year"],
+                    "core_cols": [],
+                },
+            }
+        },
+        "artifacts": {
+            "model_path": str(art_dir / "informer_model.pth"),
+            "scaler_path": str(art_dir / "scaler.pkl"),
+            "residual_model_path": str(art_dir / "residual_model.pkl"),
+            "y_scaler_path": str(art_dir / "value_scaler.pkl"),
+            "feature_cols_path": str(art_dir / "feature_cols.json"),
+            "feature_report_path": str(art_dir / "feature_report.json"),
+        },
+        "callbacks": {},
+    }
+
+    if rm_cfg:
+        config["residual_modeling"] = rm_cfg
+        if model_name.lower() == "informer":
+            config.setdefault("model_config", {}).setdefault("Informer", {})["use_residual"] = False
+            config.setdefault("post_calibration", {})["enabled"] = False
 
     try:
         pipeline_mod = load_pipeline_module()
