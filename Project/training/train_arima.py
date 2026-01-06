@@ -4,7 +4,25 @@
 import numpy as np
 from sklearn.metrics import mean_absolute_error
 from utils.array_utils import clean_and_unify_arrays
-from models.arima import build_arima_model
+
+# Optional dependency: pmdarima. Fallback to a naive predictor if missing.
+try:
+    from models.arima import build_arima_model  # type: ignore
+    _ARIMA_AVAILABLE = True
+except Exception as _e:
+    _ARIMA_AVAILABLE = False
+
+    class _NaiveArima:
+        def __init__(self, y_train):
+            self.y_train = np.asarray(y_train, dtype=float).ravel()
+
+        def predict(self, n_periods=1):
+            last = float(self.y_train[-1]) if self.y_train.size else 0.0
+            return np.array([last for _ in range(int(n_periods))], dtype=float)
+
+    def build_arima_model(y_train, config):
+        print(f"[ARIMA] pmdarima not available; using naive baseline. Error: {_e}")
+        return _NaiveArima(y_train)
 
 # 统一度量：使用全局 metrics.rmse（避免各处口径不一致）
 try:
@@ -71,8 +89,13 @@ def _rolling_forecast(base_hist, future_true, config, initial_model=None):
     preds = []
     hist = np.asarray(base_hist, dtype=float).ravel()
     local_model = initial_model
+    total = len(future_true)
+    if total > 2000:
+        print(f"[ARIMA][Rolling] large horizon={total}, may take time.")
 
     for t in range(len(future_true)):
+        if (t % 500 == 0) and t > 0:
+            print(f"[ARIMA][Rolling] progress {t}/{total}")
         # 周期重拟合或首次拟合
         if (t == 0) or (t % refit_every == 0) or (local_model is None):
             local_model = build_arima_model(hist, config)
@@ -117,12 +140,23 @@ def train_arima_model(df, config):
     series_all = np.asarray(df[value_col], dtype=float).ravel()
     if series_all.size == 0:
         empty = np.array([], dtype=float)
-        return empty, empty, empty, empty, None, None, None
+        return empty, empty, empty, empty, None, None, {"degraded": True, "reason": "no data"}
     mask = np.isfinite(series_all)
     series = series_all[mask]
     if series.size < 5:
-        empty = np.array([], dtype=float)
-        return empty, empty, empty, empty, None, None, None
+        # 数据太少：直接返回基线预测
+        y = series
+        n_total = int(len(y))
+        n_train = max(1, int(round(n_total * 0.6)))
+        n_val = max(0, int(round(n_total * 0.2)))
+        n_test = max(0, n_total - n_train - n_val)
+        y_train = y[:n_train]
+        y_val = y[n_train:n_train + n_val]
+        y_test = y[n_train + n_val:n_train + n_val + n_test]
+        last = float(y_train[-1]) if y_train.size else 0.0
+        val_pred = np.array([last] * len(y_val), dtype=float)
+        test_pred = np.array([last] * len(y_test), dtype=float)
+        return y_val, val_pred, y_test, test_pred, None, None, {"degraded": True, "reason": "too little data"}
 
     # === 切分（内联 6:2:2 或 configs 中的比例）===
     n_total = int(len(series))
@@ -135,6 +169,7 @@ def train_arima_model(df, config):
     print(f"[ARIMA][Split] n_train={len(y_train)} n_val={len(y_val)} n_test={len(y_test)}")
 
     # === 初次拟合（仅用训练段） ===
+    print(f"[ARIMA] start fit, len(train)={len(y_train)}, arima_available={_ARIMA_AVAILABLE}")
     base_model = build_arima_model(y_train, config)
     try:
         print(f"[ARIMA][Model] order={getattr(base_model,'order',None)} "
@@ -245,5 +280,7 @@ def train_arima_model(df, config):
         best_params = getattr(final_model, "get_params", lambda: None)()
     except Exception:
         best_params = None
+    if not _ARIMA_AVAILABLE:
+        best_params = {"degraded": True, "reason": "pmdarima not installed"}
 
     return val_true, val_forecast, test_true, test_forecast, final_model, test_forecast_df, best_params

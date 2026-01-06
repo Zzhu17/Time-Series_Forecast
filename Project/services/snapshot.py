@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import logging
 from pathlib import Path
 from typing import Any, Optional
 
@@ -11,6 +12,7 @@ import pandas as pd
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]  # .../Project
 DEFAULT_SNAPSHOT_PATH = PROJECT_DIR / "output" / "last_results.json"
+LOGGER = logging.getLogger(__name__)
 
 
 def as_int(x: Any, default: Optional[int] = None) -> Optional[int]:
@@ -85,7 +87,7 @@ def reset_snapshot(path: str = os.path.join("output", "last_results.json")) -> N
             p = PROJECT_DIR / p
         p.unlink(missing_ok=True)
     except Exception:
-        pass
+        LOGGER.warning("Failed to reset snapshot at %s", path, exc_info=True)
 
 
 def cacheable_results(results: dict) -> dict:
@@ -150,7 +152,7 @@ def save_last_results_json(payload: dict, path: str = os.path.join("output", "la
         with p.open("w", encoding="utf-8") as f:
             json.dump(safe_jsonify(payload), f, ensure_ascii=False, indent=2)
     except Exception:
-        pass
+        LOGGER.error("Failed to save snapshot to %s", path, exc_info=True)
 
 
 def load_last_results_json(path: str = os.path.join("output", "last_results.json")) -> Optional[dict]:
@@ -177,6 +179,7 @@ def load_last_results_json(path: str = os.path.join("output", "last_results.json
                     obj["results"] = res
         return obj
     except Exception:
+        LOGGER.warning("Failed to load snapshot from %s", path, exc_info=True)
         return None
 
 
@@ -278,4 +281,4 @@ def strip_heavy_inplace(cfg: dict) -> None:
                 if k in arts:
                     arts[k] = None
     except Exception:
-        pass
+        LOGGER.debug("Failed to strip heavy artifacts from config", exc_info=True)

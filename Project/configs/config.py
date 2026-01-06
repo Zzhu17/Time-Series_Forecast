@@ -1,5 +1,9 @@
-import yaml
+import logging
 import os
+
+import yaml
+
+LOGGER = logging.getLogger(__name__)
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'configs.yaml')
 
@@ -42,9 +46,11 @@ def load_yaml_config(path: str = CONFIG_PATH) -> dict:
             data = yaml.safe_load(f)
             return data or {}
     except FileNotFoundError:
+        LOGGER.warning("Config file not found at %s; using empty config", path)
         return {}
     except Exception as e:
-        return {}
+        LOGGER.error("Failed to load config from %s: %s", path, e)
+        raise
 
 def get_informer_config(layer: dict) -> dict:
     layer = dict(layer or {})

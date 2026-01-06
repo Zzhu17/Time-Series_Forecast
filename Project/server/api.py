@@ -12,12 +12,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, validator
 
 from utils.schemas import PipelineRunModel
-from server.xgb_loader import XGBPredictor
 from server.tasks import submit_train_task, get_task, list_tasks
 from server.registry import register_model, promote_model, get_model as get_model_rec, list_models as list_models_rec, latest_production
 from server.logging_utils import setup_json_logger, log_json
 from services.pipeline_loader import load_pipeline_module
 from services.snapshot import cacheable_results
+from server.predict_utils import baseline_predict, predict_with_xgboost
 
 LOGGER = setup_json_logger()
 app = FastAPI(title="TS Forecast API", version="0.1.0")
@@ -146,18 +146,6 @@ class ModelInfo(BaseModel):
 
 
 # ------------------------
-# Helpers
-# ------------------------
-def _baseline_predict(df: pd.DataFrame, value_col: str, horizon: int) -> List[float]:
-    if value_col not in df.columns:
-        raise KeyError(f"Missing target column '{value_col}' in rows.")
-    y = pd.to_numeric(df[value_col], errors="coerce").dropna()
-    if len(y) == 0:
-        raise ValueError("No numeric values found for target column.")
-    last = float(y.iloc[-1])
-    return [last for _ in range(horizon)]
-
-
 def _auto_feature_cols(
     df: pd.DataFrame,
     time_col: str,
@@ -238,7 +226,7 @@ def predict(req: PredictRequest):
     # For now: provide a safe baseline predictor; heavy models require artifact loading (not implemented here).
     model = req.model_name.lower()
     if model == "baseline":
-        preds = _baseline_predict(df, req.value_col, req.horizon)
+        preds = baseline_predict(df, req.value_col, req.horizon)
         log_json(
             LOGGER,
             "predict",
@@ -247,71 +235,46 @@ def predict(req: PredictRequest):
             degraded=False,
             duration_ms=int((time.time() - req_start) * 1000),
         )
-        return PredictResponse(status="ok", degraded=False, predictions=preds, used_model="baseline")
+        return PredictResponse(status="ok", degraded=False, predictions=preds.tolist(), used_model="baseline")
 
     if model == "xgboost":
-        # Expect artifacts at default locations; degrade to baseline if missing
-        model_path = "Project/artifacts/xgboost_model.json"
-        contract_path = "Project/artifacts/feature_cols.json"
-        target_transform = None  # could be loaded from artifacts if saved
         try:
-            predictor = XGBPredictor(
-                model_path=model_path,
-                feature_contract_path=contract_path,
-                target_transform=target_transform,
+            preds, degraded, used_model, reason = predict_with_xgboost(
+                df,
                 time_col=req.time_col,
                 value_col=req.value_col,
+                horizon=req.horizon,
+                baseline_fallback=True,
             )
-            preds, meta, degraded, reason = predictor.predict(df, horizon=req.horizon)
-            resp = PredictResponse(
-                status="ok",
-                degraded=bool(degraded),
-                reason=reason,
-                predictions=preds.tolist(),
-                used_model="xgboost",
-            )
-            log_json(
-                LOGGER,
-                "predict",
-                trace_id=trace_id,
-                model="xgboost",
-                degraded=bool(degraded),
-                reason=reason,
-                duration_ms=int((time.time() - req_start) * 1000),
-            )
-            return resp
         except Exception as e:
-            # fallback baseline
-            try:
-                preds = _baseline_predict(df, req.value_col, req.horizon)
-                resp = PredictResponse(
-                    status="ok",
-                    degraded=True,
-                    reason=f"xgboost failed: {e}; baseline fallback",
-                    predictions=preds,
-                    used_model="xgboost->baseline",
-                )
-                log_json(
-                    LOGGER,
-                    "predict",
-                    trace_id=trace_id,
-                    model="xgboost",
-                    degraded=True,
-                    reason=str(e),
-                    duration_ms=int((time.time() - req_start) * 1000),
-                )
-                return resp
-            except Exception as inner:
-                raise HTTPException(status_code=400, detail=f"xgboost failed: {e}; baseline failed: {inner}") from inner
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+        resp = PredictResponse(
+            status="ok",
+            degraded=degraded,
+            reason=reason or None,
+            predictions=preds.tolist(),
+            used_model=used_model,
+        )
+        log_json(
+            LOGGER,
+            "predict",
+            trace_id=trace_id,
+            model="xgboost",
+            degraded=degraded,
+            reason=reason,
+            duration_ms=int((time.time() - req_start) * 1000),
+        )
+        return resp
 
     # Other heavy models not wired yet -> degrade with baseline
     try:
-        preds = _baseline_predict(df, req.value_col, req.horizon)
+        preds = baseline_predict(df, req.value_col, req.horizon)
         resp = PredictResponse(
             status="ok",
             degraded=True,
             reason="heavy model loading not implemented; returned baseline",
-            predictions=preds,
+            predictions=preds.tolist(),
             used_model=f"{model}->baseline",
         )
         log_json(

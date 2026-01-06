@@ -72,6 +72,10 @@ def build_arima_model(y_train: Any, config: dict) -> Any:
   y_train = np.asarray(y_train, dtype=float).ravel()
   n = int(y_train.size)
   n = max(n, 1)
+  try:
+      print(f"[ARIMA][build] len={n}, use_seasonal={c.get('use_seasonal')}, s={c.get('seasonal_period')}, max_p/q=({c.get('max_p')},{c.get('max_q')}) max_P/Q=({c.get('max_P')},{c.get('max_Q')})")
+  except Exception:
+      pass
 
   # 读取 ARIMA 段的可选开关（如 boxcox）
   use_boxcox = bool(mcfg.get("boxcox", False))

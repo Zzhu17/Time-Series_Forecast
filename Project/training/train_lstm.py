@@ -227,33 +227,10 @@ def train_lstm_model(df: pd.DataFrame, config: dict):
 
     # ---- training loop ----
     if train_X.shape[0] == 0:
-        # 数据太短时直接跳过训练，返回空结果，避免异常中断 app
-        val_true_u = np.asarray(val_y, dtype=float).reshape(-1)
-        val_pred_u = np.asarray([], dtype=float)
-        test_true_u = np.asarray(test_y, dtype=float).reshape(-1)
-        test_pred_u = np.asarray([], dtype=float)
-        val_dense = None
-        test_dense = None
-        best_params = {
-            "seq_len": effective_seq_len,
-            "hidden_size": hidden_size,
-            "num_layers": num_layers,
-            "learning_rate": lr,
-            "weight_decay": weight_decay,
-            "batch_size": batch_size,
-            "epochs": epochs,
-            "dropout": dropout,
-        }
-        data_blk["val_dense"] = val_dense
-        data_blk["test_dense"] = test_dense
-        return (
-            val_true_u,
-            val_pred_u,
-            test_true_u,
-            test_pred_u,
-            None,
-            None,
-            best_params,
+        # 数据太短或 seq_len 过长导致无法形成窗口，直接抛异常提示用户
+        raise RuntimeError(
+            f"LSTM training aborted: insufficient data for seq_len={effective_seq_len} "
+            f"(samples={len(df)}). Reduce seq_len or provide more data."
         )
     device = get_device_from_config(config)
     dtype = _dtype_from_config(config)
@@ -396,9 +373,13 @@ def train_lstm_model(df: pd.DataFrame, config: dict):
         L = min(len(y_t), len(y_p), len(ts_list) if ts_list else len(y_t))
         if L == 0:
             return None
-        idx = None
-        if ts_list:
+        if not ts_list or len(ts_list) < L:
+            # fallback timestamps to keep plot_data available
+            ts_list = list(pd.date_range(start=pd.Timestamp.today().normalize(), periods=L, freq="D"))
+        try:
             idx = pd.DatetimeIndex(ts_list[:L], name=time_col)
+        except Exception:
+            idx = None
         df_out = pd.DataFrame({
             "y_true": np.asarray(y_t, dtype=float)[:L],
             "yhat": np.asarray(y_p, dtype=float)[:L],

@@ -4,14 +4,13 @@ import uuid
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from typing import Any, Dict, Tuple
+from typing import Any, Dict
 
-import numpy as np
 import pandas as pd
 
 from server.db import SessionLocal, TaskRecord, init_db
-from server.xgb_loader import XGBPredictor
 from server.logging_utils import setup_json_logger, log_json
+from server.predict_utils import baseline_predict, predict_with_xgboost
 
 # Initialize DB (sqlite by default)
 init_db()
@@ -23,16 +22,6 @@ LOGGER = setup_json_logger()
 
 def _now():
     return datetime.utcnow()
-
-
-def _baseline_predict(df: pd.DataFrame, value_col: str, horizon: int) -> Tuple[np.ndarray, bool, str | None]:
-    if value_col not in df.columns:
-        raise KeyError(f"Missing target column '{value_col}' in rows.")
-    y = pd.to_numeric(df[value_col], errors="coerce").dropna()
-    if len(y) == 0:
-        raise ValueError("No numeric values found for target column.")
-    last = float(y.iloc[-1])
-    return np.array([last for _ in range(horizon)], dtype=float), False, None
 
 
 def _run_task(task_id: str, payload: Dict[str, Any]):
@@ -60,23 +49,20 @@ def _run_task(task_id: str, payload: Dict[str, Any]):
 
         if model == "xgboost":
             try:
-                predictor = XGBPredictor(
-                    model_path="Project/artifacts/xgboost_model.json",
-                    feature_contract_path="Project/artifacts/feature_cols.json",
-                    target_transform=None,
+                preds, degraded, used_model, reason = predict_with_xgboost(
+                    df,
                     time_col=time_col,
                     value_col=value_col,
+                    horizon=horizon,
+                    baseline_fallback=True,
                 )
-                preds, meta, degraded, reason = predictor.predict(df, horizon=horizon)
+                model = used_model
             except Exception as e:
                 degraded = True
                 reason = f"xgboost failed: {e}"
 
         if preds is None:
-            preds, degraded2, reason2 = _baseline_predict(df, value_col, horizon)
-            degraded = degraded or degraded2
-            if reason2:
-                reason = (reason or "") + f"|{reason2}"
+            preds = baseline_predict(df, value_col, horizon)
             if model != "baseline" and not reason:
                 reason = f"{model} not available; baseline used"
 
