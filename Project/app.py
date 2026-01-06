@@ -10,7 +10,9 @@ from services.snapshot import (
     as_int,
     cacheable_results,
     load_last_results_json,
+    reset_snapshot,
 )
+from services.ui_theme import inject_global_theme
 from visualizations.plot import df_from_long, render_true_pred, render_val_test
 
 # Disable pipeline-side Matplotlib plotting (can hang on macOS); the app renders plots itself.
@@ -228,7 +230,8 @@ def _render_cached_summary(results: dict, *, model_name: str, time_col: str, val
     if rv_pct is not None or rt_pct is not None:
         st.caption(f"Relative RMSE (vs mean |y|): Val {rv_pct:.3f}% | Test {rt_pct:.3f}%")
 
-    st.subheader("📈 Forecast (Val/Test)")
+    st.markdown("<div class='tsf-card'>", unsafe_allow_html=True)
+    st.markdown("### 📈 Forecast (Val/Test)", unsafe_allow_html=True)
     plot_blob = (data_blob.get("plot_data") or {}) if isinstance(data_blob, dict) else {}
     val_plot = plot_blob.get("val") if isinstance(plot_blob, dict) else None
     test_plot = plot_blob.get("test") if isinstance(plot_blob, dict) else None
@@ -264,6 +267,7 @@ def _render_cached_summary(results: dict, *, model_name: str, time_col: str, val
                 st.json(paths)
         except Exception:
             pass
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ==========================
@@ -271,10 +275,20 @@ def _render_cached_summary(results: dict, *, model_name: str, time_col: str, val
 # ==========================
 
 st.set_page_config(page_title="Universal TS Forecast", layout="wide")
-st.title("🧠 Universal Time Series Forecast")
-st.caption(
-    "Note: Streamlit file watcher is disabled (see `.streamlit/config.toml`) "
-    "to avoid reruns interrupting training while writing artifacts."
+inject_global_theme()
+
+st.markdown(
+    """
+    <div class="tsf-hero">
+      <div class="tsf-hero-icon">📈</div>
+      <div>
+        <div class="tsf-pill">Universal Time-Series Forecast</div>
+        <h1>Upload, configure, and forecast with one unified pipeline.</h1>
+        <p class="section-note">File watcher is disabled (see .streamlit/config.toml) to prevent reruns while artifacts are written.</p>
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
 
 # ---- Explicit state management: persist results & user actions across reruns ----
@@ -283,90 +297,103 @@ st.session_state.setdefault("last_meta", None)             # dict
 st.session_state.setdefault("last_results_source", None)   # fresh/degraded/snapshot
 st.session_state.setdefault("is_training", False)          # avoid stale snapshot rendering mid-run
 
-# Main: upload + model + run
-uploaded = st.file_uploader("Upload CSV", type=["csv"])
+with st.container():
+    st.markdown("<div class='tsf-card'>", unsafe_allow_html=True)
+    st.markdown("### Data & Model setup", unsafe_allow_html=True)
+    st.markdown("<p class='section-note'>Upload your CSV, choose a preset or customize the model/residual pairing, then run training.</p>", unsafe_allow_html=True)
 
-# Presets are convenience shortcuts; they only configure (base model + residual learner).
-preset_name = st.selectbox(
-    "Preset",
-    ["Default", "Informer + XGBoost (residual)", "LSTM + XGBoost (residual)"],
-    index=0,
-)
-_preset_model = None
-_preset_residual = None
-if preset_name == "Informer + XGBoost (residual)":
-    _preset_model = "Informer"
-    _preset_residual = "xgboost"
-elif preset_name == "LSTM + XGBoost (residual)":
-    _preset_model = "LSTM"
-    _preset_residual = "XGBoost"
+    uploaded = st.file_uploader("Upload CSV", type=["csv"])
 
-model_options = ["Informer", "ARIMA", "Prophet", "RandomForest", "LSTM", "XGBoost"]
-try:
-    if _preset_model:
-        st.session_state["model_name"] = _preset_model
-    st.session_state.setdefault("model_name", model_options[0])
-except Exception:
-    pass
-model_name = st.selectbox("Model", model_options, index=0, key="model_name", disabled=bool(_preset_model))
-
-residual_options = ["none", "linear", "XGBoost"]
-try:
-    if _preset_residual:
-        st.session_state["residual_learner"] = _preset_residual
-    st.session_state.setdefault("residual_learner", "none")
-except Exception:
-    pass
-residual_learner = st.selectbox(
-    "Residual learner",
-    residual_options,
-    index=0,
-    key="residual_learner",
-    disabled=bool(_preset_residual),
-    help="Learns residual = y_true - y_hat_main, then adds it back to the main prediction.",
-)
-
-if torch is None:
-    st.warning("`torch` is not installed: Informer/LSTM are unavailable. Install with: `pip install torch`.")
-    device_choice = st.selectbox("Compute device", ["cpu"], index=0, help="Torch is missing; CPU only.")
-    mps_ok = False
-else:
-    device_choice = st.selectbox(
-        "Compute device",
-        ["auto", "mps", "cpu"],
+    preset_name = st.selectbox(
+        "Preset",
+        ["Default", "Informer + XGBoost (residual)", "LSTM + XGBoost (residual)"],
         index=0,
-        help="auto: prefer MPS, then CPU; mps: force MPS (no fallback)",
     )
-    try:
-        mps_ok = bool(getattr(torch.backends, 'mps', None) is not None and torch.backends.mps.is_built() and torch.backends.mps.is_available())
-    except Exception:
-        mps_ok = False
-if device_choice == 'mps' and not mps_ok:
-    st.error("You selected MPS (forced), but MPS is not available in this PyTorch build. Upgrade PyTorch or switch to auto/cpu.")
-    st.stop()
+    _preset_model = None
+    _preset_residual = None
+    if preset_name == "Informer + XGBoost (residual)":
+        _preset_model = "Informer"
+        _preset_residual = "xgboost"
+    elif preset_name == "LSTM + XGBoost (residual)":
+        _preset_model = "LSTM"
+        _preset_residual = "XGBoost"
 
-if model_name == "randomforest":
-    st.caption("⚙️ RandomForest runs Optuna tuning on the validation split (n_trials from configs.yaml: optimization.n_trials).")
-if model_name == "lstm":
-    st.caption("🧩 LSTM uses configs.yaml: model_config.LSTM (seq_len/hidden_dim/num_layers/n_epochs/learning_rate) and produces dense val/test predictions.")
-if model_name == "xgboost":
-    st.caption("🌲 XGBoost uses configs.yaml: model_config.XGBoost and produces dense val/test predictions.")
-if residual_learner != "none":
-    st.caption(f"🧪 Residual modeling enabled: {residual_learner}.")
-run_click = st.button("Train & Predict", type="primary")
+    col_cfg1, col_cfg2 = st.columns(2)
+    with col_cfg1:
+        model_options = ["Informer", "ARIMA", "Prophet", "RandomForest", "LSTM", "XGBoost"]
+        try:
+            if _preset_model:
+                st.session_state["model_name"] = _preset_model
+            st.session_state.setdefault("model_name", model_options[0])
+        except Exception:
+            pass
+        model_name = st.selectbox("Model", model_options, index=0, key="model_name", disabled=bool(_preset_model))
+
+        residual_options = ["none", "linear", "XGBoost"]
+        try:
+            if _preset_residual:
+                st.session_state["residual_learner"] = _preset_residual
+            st.session_state.setdefault("residual_learner", "none")
+        except Exception:
+            pass
+        residual_learner = st.selectbox(
+            "Residual learner",
+            residual_options,
+            index=0,
+            key="residual_learner",
+            disabled=bool(_preset_residual),
+            help="Learns residual = y_true - y_hat_main, then adds it back to the main prediction.",
+        )
+    with col_cfg2:
+        if torch is None:
+            st.warning("`torch` is not installed: Informer/LSTM are unavailable. Install with: `pip install torch`.")
+            device_choice = st.selectbox("Compute device", ["cpu"], index=0, help="Torch is missing; CPU only.")
+            mps_ok = False
+        else:
+            device_choice = st.selectbox(
+                "Compute device",
+                ["auto", "mps", "cpu"],
+                index=0,
+                help="auto: prefer MPS, then CPU; mps: force MPS (no fallback)",
+            )
+            try:
+                mps_ok = bool(getattr(torch.backends, 'mps', None) is not None and torch.backends.mps.is_built() and torch.backends.mps.is_available())
+            except Exception:
+                mps_ok = False
+
+        if device_choice == 'mps' and not mps_ok:
+            st.error("You selected MPS (forced), but MPS is not available in this PyTorch build. Upgrade PyTorch or switch to auto/cpu.")
+            st.stop()
+
+        if model_name == "randomforest":
+            st.caption("⚙️ RandomForest runs Optuna tuning on the validation split (n_trials from configs.yaml: optimization.n_trials).")
+        if model_name == "lstm":
+            st.caption("🧩 LSTM uses configs.yaml: model_config.LSTM (seq_len/hidden_dim/num_layers/n_epochs/learning_rate) and produces dense val/test predictions.")
+        if model_name == "xgboost":
+            st.caption("🌲 XGBoost uses configs.yaml: model_config.XGBoost and produces dense val/test predictions.")
+        if residual_learner != "none":
+            st.caption(f"🧪 Residual modeling enabled: {residual_learner}.")
+
+    run_click = st.button("Train & Predict", type="primary")
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # Online rolling inference (no retraining)
-col_r1, col_r2, col_r3 = st.columns([1,1,2])
-with col_r1:
-    horizon_days = st.selectbox("Online forecast horizon (days)", [1, 3, 7], index=0)
-with col_r2:
-    step_mode = st.selectbox("Rolling step", ["Block step (= horizon)", "Step-by-step (= 1)"], index=0)
-with col_r3:
-    st.caption("Block step is faster with no error accumulation; step-by-step is smoother but slower and accumulates errors.")
-    allow_degrade = st.checkbox("Allow degrade (fallback to baseline if Required Core is missing)", value=False)
-    st.caption("When enabled: online inference falls back to a baseline if required features are missing; training/eval may also return baseline with degraded=True.")
+with st.container():
+    st.markdown("<div class='tsf-card'>", unsafe_allow_html=True)
+    st.markdown("### Online rolling inference", unsafe_allow_html=True)
+    st.markdown("<p class='section-note'>Run fast rolling forecasts without retraining; choose horizon and step.</p>", unsafe_allow_html=True)
+    col_r1, col_r2, col_r3 = st.columns([1,1,2])
+    with col_r1:
+        horizon_days = st.selectbox("Online forecast horizon (days)", [1, 3, 7], index=0)
+    with col_r2:
+        step_mode = st.selectbox("Rolling step", ["Block step (= horizon)", "Step-by-step (= 1)"], index=0)
+    with col_r3:
+        st.caption("Block step is faster with no error accumulation; step-by-step is smoother but slower and accumulates errors.")
+        allow_degrade = st.checkbox("Allow degrade (fallback to baseline if Required Core is missing)", value=False)
+        st.caption("When enabled: online inference falls back to a baseline if required features are missing; training/eval may also return baseline with degraded=True.")
 
-online_click = st.button("Predict only (online rolling)", type="secondary")
+    online_click = st.button("Predict only (online rolling)", type="secondary")
+    st.markdown("</div>", unsafe_allow_html=True)
 
 if uploaded is None:
     st.info("Upload a CSV file to begin.")
@@ -463,9 +490,11 @@ else:
         st.error(f"CSV is missing required columns: {missing_cols}")
         st.stop()
 
-    st.subheader("📄 Data preview")
+    st.markdown("<div class='tsf-card'>", unsafe_allow_html=True)
+    st.markdown("### 📄 Data preview", unsafe_allow_html=True)
     st.caption(f"Time column: {time_col} | Target: {value_col}")
     st.dataframe(df.head(10), use_container_width=True)
+    st.markdown("</div>", unsafe_allow_html=True)
     # Results area: cleared at training start, filled when training completes (or from cached snapshot).
     results_container = st.empty()
 
@@ -562,7 +591,8 @@ else:
             denom = np.where(y_true == 0, np.nan, np.abs(y_true))
             mape = float(np.nanmean(np.abs((y_hat - y_true) / denom)) * 100.0)
 
-            st.subheader("⚡ Online rolling inference — Metrics")
+            st.markdown("<div class='tsf-card'>", unsafe_allow_html=True)
+            st.markdown("### ⚡ Online rolling inference — Metrics", unsafe_allow_html=True)
             c1, c2 = st.columns(2)
             with c1:
                 st.metric("Online RMSE", f"{rmse:.4f}")
@@ -581,7 +611,7 @@ else:
                 "dropped_optional_features": dblk.get("dropped_optional_features"),
             }
 
-            st.subheader("📈 Online rolling inference — Curve")
+            st.markdown("### 📈 Online rolling inference — Curve", unsafe_allow_html=True)
             online_plot_n = st.selectbox("Points to plot (last N)", ["1000", "2000", "4000", "ALL"], index=1, key="plot_n_online")
             online_marker_every = st.number_input("Marker every k points", min_value=20, max_value=2000, value=200, step=20, key="plot_marker_online")
             n_points = None if online_plot_n == "ALL" else int(online_plot_n)
@@ -628,6 +658,7 @@ else:
                     )
                 except Exception:
                     pass
+            st.markdown("</div>", unsafe_allow_html=True)
     # ==========================
     # Train + predict + unified plotting (6/2/2 + long series)
     # ==========================
@@ -799,6 +830,18 @@ else:
                 pass
 
         config["callbacks"]["progress"] = _progress_cb
+
+        # Fresh run: drop any stale snapshot and cached results to avoid stringified plot_data issues.
+        try:
+            reset_snapshot()
+        except Exception:
+            pass
+        try:
+            for _k in ("last_results", "last_meta", "last_results_source"):
+                st.session_state.pop(_k, None)
+        except Exception:
+            pass
+
         _set_progress(0.02, "Starting pipeline...")
         try:
             pipeline_mod = load_pipeline_module()
