@@ -6,6 +6,9 @@ import os
 import numpy as np
 import random
 
+from utils.schemas import PipelineRunModel
+from utils.feature_pipeline import save_feature_contract_if_any
+
 # ---------- 连续序列拼接：供 plot.py 连续分支直接使用 ----------
 def build_continuous_series(train_df_plot, val_dense, test_dense, time_col=None):
     """
@@ -1160,6 +1163,14 @@ def run_pipeline_and_update_state(
         pass
 
     try:
+        # Validate minimal run schema (time_col/value_col/model_name/features).
+        PipelineRunModel(
+            time_col=time_col,
+            value_col=value_col,
+            model_name=model_name,
+            feature_cols=list(feature_cols or []),
+            residual_modeling=config.get("residual_modeling"),
+        )
         import inspect
 
         sig = inspect.signature(run_train_predict_pipeline)
@@ -1177,6 +1188,12 @@ def run_pipeline_and_update_state(
     strip_heavy_inplace(config)
     if isinstance(results, dict):
         results["artifacts"] = safe_artifacts_from_config(config)
+        # Persist feature contract if present (non-Informer path)
+        try:
+            rep = (config.get("data") or {}).get("feature_prep_report")
+            save_feature_contract_if_any(rep if isinstance(rep, dict) else {}, config.get("artifacts") or {})
+        except Exception:
+            pass
 
     snap_meta = {
         "uploaded_name": uploaded_name,
@@ -1261,7 +1278,20 @@ def run_pipeline_and_update_state(
 
     if val_plot or test_plot:
         snap_results.setdefault("data", {})
-        snap_results["data"]["plot_data"] = {"val": val_plot, "test": test_plot}
+        # Coerce any stringified plot blobs back to dict for safety (avoids cached snapshots with stringified dicts).
+        def _coerce_plot(p):
+            if isinstance(p, str):
+                try:
+                    import json, ast
+                    try:
+                        return json.loads(p)
+                    except Exception:
+                        return ast.literal_eval(p)
+                except Exception:
+                    return None
+            return p
+
+        snap_results["data"]["plot_data"] = {"val": _coerce_plot(val_plot), "test": _coerce_plot(test_plot)}
     if isinstance(mean_abs_true_val, (int, float)) and np.isfinite(float(mean_abs_true_val)) and float(mean_abs_true_val) > 0:
         snap_results.setdefault("data", {})
         snap_results["data"]["mean_abs_true_val"] = float(mean_abs_true_val)

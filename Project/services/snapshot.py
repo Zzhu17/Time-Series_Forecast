@@ -62,6 +62,32 @@ def safe_jsonify(obj: Any, *, max_depth: int = 4, max_items: int = 50):
     return f"<{type(obj).__name__}>"
 
 
+def _coerce_plot_blob(blob: Any):
+    """Convert a stringified plot_data blob back to a dict, otherwise return as-is."""
+    if isinstance(blob, str):
+        try:
+            import json as _json, ast
+
+            try:
+                return _json.loads(blob)
+            except Exception:
+                return ast.literal_eval(blob)
+        except Exception:
+            return None
+    return blob
+
+
+def reset_snapshot(path: str = os.path.join("output", "last_results.json")) -> None:
+    """Remove the last_results snapshot so a new run starts cleanly."""
+    try:
+        p = Path(path) if isinstance(path, (str, Path)) else DEFAULT_SNAPSHOT_PATH
+        if not p.is_absolute():
+            p = PROJECT_DIR / p
+        p.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def cacheable_results(results: dict) -> dict:
     if not isinstance(results, dict):
         return {"status": "error", "message": "non-dict results"}
@@ -136,7 +162,20 @@ def load_last_results_json(path: str = os.path.join("output", "last_results.json
             return None
         with p.open("r", encoding="utf-8") as f:
             obj = json.load(f)
-        return obj if isinstance(obj, dict) else None
+        if not isinstance(obj, dict):
+            return None
+
+        # Repair stringified plot_data if present.
+        res = obj.get("results")
+        if isinstance(res, dict):
+            data = res.get("data")
+            if isinstance(data, dict):
+                pd_blob = data.get("plot_data")
+                if isinstance(pd_blob, dict):
+                    data["plot_data"] = {k: _coerce_plot_blob(v) for k, v in pd_blob.items()}
+                    res["data"] = data
+                    obj["results"] = res
+        return obj
     except Exception:
         return None
 

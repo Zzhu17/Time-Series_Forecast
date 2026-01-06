@@ -272,6 +272,7 @@ def prepare_df_for_non_informer_models(
 
     final_feature_cols = list(base_feat_cols)
     selection_report: Dict[str, Any] | None = None
+    feature_contract: Dict[str, Any] | None = None
     try:
         final_feature_cols, contract = select_features_train_only(
             train_df,
@@ -284,6 +285,10 @@ def prepare_df_for_non_informer_models(
             selection_report = dict(getattr(contract, "selection_report", None) or {})  # type: ignore[attr-defined]
         except Exception:
             selection_report = None
+        try:
+            feature_contract = contract.to_dict()  # type: ignore[attr-defined]
+        except Exception:
+            feature_contract = None
     except Exception as e:
         selection_report = {"error": str(e), "fallback": True, "candidates": list(base_feat_cols)}
         final_feature_cols = list(base_feat_cols)
@@ -302,6 +307,7 @@ def prepare_df_for_non_informer_models(
         "tiers": tiers.to_dict(),
         "strict_report": strict_report,
         "selection_report": selection_report,
+        "feature_contract": feature_contract,
         "split": {"train_len": int(t_len), "val_len": int(v_len), "test_len": int(len(cleaned) - t_len - v_len)},
     }
     return cleaned, final_feature_cols, report

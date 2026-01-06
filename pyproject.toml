@@ -1,0 +1,33 @@
+[tool.ruff]
+target-version = "py39"
+line-length = 120
+exclude = ["Project/artifacts", "Project/output", ".venv", "venv", ".tmp", ".cache"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+# Relax style checks to accommodate legacy files.
+ignore = ["E501", "I001", "F401", "E741", "E702", "E401", "E402", "E701", "F811", "F821", "F841"]
+
+[tool.mypy]
+python_version = "3.9"
+ignore_missing_imports = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+exclude = "(Project/artifacts|Project/output|.venv|venv|.tmp|.cache|Project/preprocessing|Project/server/xgb_loader.py|Project/server/tasks.py)"
+
+[[tool.mypy.overrides]]
+# Many runtime-heavy modules rely on dynamic libraries; skip strict type-checking to keep CI noise low.
+module = [
+    "app",
+    "configs.*",
+    "evaluation.*",
+    "models.*",
+    "server.*",
+    "services.*",
+    "training.*",
+    "ui.*",
+    "utils.*",
+    "visualizations.*",
+]
+ignore_errors = true

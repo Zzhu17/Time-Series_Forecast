@@ -21,3 +21,12 @@ torch>=2.1.0
 
 # Optional plotting backend (pipeline-side matplotlib)
 matplotlib>=3.8.0
+
+# Validation / schemas
+pydantic>=1.10.0,<2.0
+
+# API
+fastapi>=0.104.0
+uvicorn>=0.23.0
+sqlalchemy>=2.0.0
+psycopg[binary]>=3.1.9

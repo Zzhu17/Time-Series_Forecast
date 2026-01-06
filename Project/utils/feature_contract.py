@@ -15,7 +15,12 @@ def ensure_calendar_features(df: pd.DataFrame, *, time_col: str) -> pd.DataFrame
     if time_col not in df.columns:
         raise KeyError(f"Missing time_col '{time_col}' required to rebuild calendar features.")
     out = df.copy()
-    ts = pd.to_datetime(out[time_col], errors="coerce")
+    # Normalize with utc=True to avoid mixed timezone warnings, then strip tz info.
+    ts = pd.to_datetime(out[time_col], errors="coerce", utc=True)
+    try:
+        ts = ts.dt.tz_localize(None)
+    except Exception:
+        pass
     out["month"] = ts.dt.month
     out["day_of_month"] = ts.dt.day
     out["day_of_week"] = ts.dt.dayofweek
