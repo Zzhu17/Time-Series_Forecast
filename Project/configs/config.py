@@ -1,11 +1,26 @@
 import logging
 import os
+from typing import Optional
 
 import yaml
 
 LOGGER = logging.getLogger(__name__)
 
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'configs.yaml')
+CONFIG_PATH = os.path.join(os.path.dirname(__file__), "configs.yaml")
+
+
+def _env_name() -> str:
+    return str(os.getenv("TSF_ENV") or os.getenv("ENV") or "").strip()
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    out = dict(base)
+    for key, val in (override or {}).items():
+        if isinstance(val, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out.get(key, {}), val)
+        else:
+            out[key] = val
+    return out
 
 # 支持的模型结构规则：限制允许传入构造器的字段
 MODEL_CONFIG_RULES = {
@@ -27,8 +42,7 @@ MODEL_CONFIG_RULES = {
 }
 
 def get_default_config():
-    with open(CONFIG_PATH, 'r') as f:
-        config = yaml.safe_load(f)
+    config = load_yaml_config()
     config.setdefault("columns", {
         "time_col": "date",
         "value_col": "value"
@@ -36,15 +50,22 @@ def get_default_config():
     return config
 
 # Helper function to load a YAML configuration file
-def load_yaml_config(path: str = CONFIG_PATH) -> dict:
+def load_yaml_config(path: str = CONFIG_PATH, env: Optional[str] = None) -> dict:
     """
     Load a YAML configuration file and return its contents as a dict.
     Defaults to loading from CONFIG_PATH.
     """
     try:
         with open(path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-            return data or {}
+            base = yaml.safe_load(f) or {}
+        env_name = str(env or _env_name())
+        if env_name:
+            env_path = os.path.join(os.path.dirname(path), f"configs.{env_name}.yaml")
+            if os.path.exists(env_path):
+                with open(env_path, "r", encoding="utf-8") as f:
+                    env_cfg = yaml.safe_load(f) or {}
+                base = _deep_merge(base, env_cfg)
+        return base
     except FileNotFoundError:
         LOGGER.warning("Config file not found at %s; using empty config", path)
         return {}

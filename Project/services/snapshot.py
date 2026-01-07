@@ -96,6 +96,12 @@ def cacheable_results(results: dict) -> dict:
 
     data = results.get("data", {}) if isinstance(results.get("data", {}), dict) else {}
     metrics = results.get("metrics", {}) if isinstance(results.get("metrics", {}), dict) else {}
+    if not isinstance(metrics, dict):
+        metrics = {}
+    if "validation" not in metrics and isinstance(data.get("val_metrics"), dict):
+        metrics["validation"] = data.get("val_metrics")
+    if "test" not in metrics and isinstance(data.get("test_metrics"), dict):
+        metrics["test"] = data.get("test_metrics")
     arts = results.get("artifacts", {}) if isinstance(results.get("artifacts", {}), dict) else {}
 
     data_keep = {}

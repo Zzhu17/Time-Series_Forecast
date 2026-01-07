@@ -1,0 +1,29 @@
+services:
+  api:
+    build: .
+    env_file:
+      - .env
+    environment:
+      TSF_ENV: ${TSF_ENV:-dev}
+      PYTHONPATH: /app/Project
+    command: uvicorn api.app:app --host 0.0.0.0 --port ${API_PORT:-8000}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - ./Project:/app/Project
+
+  ui:
+    build: .
+    env_file:
+      - .env
+    environment:
+      TSF_ENV: ${TSF_ENV:-dev}
+      TSF_API_URL: ${TSF_API_URL:-http://api:8000}
+      PYTHONPATH: /app/Project
+    command: streamlit run Project/app.py --server.address 0.0.0.0 --server.port ${UI_PORT:-8501}
+    depends_on:
+      - api
+    ports:
+      - "${UI_PORT:-8501}:8501"
+    volumes:
+      - ./Project:/app/Project

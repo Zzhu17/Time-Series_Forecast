@@ -1,6 +1,8 @@
 # train_arima.py  — 强化版（仅本文件改动）
 # 依赖：metrics.rmse / utils.array_utils.clean_and_unify_arrays / models.arima.build_arima_model
 
+import os
+import pickle
 import numpy as np
 from sklearn.metrics import mean_absolute_error
 from utils.array_utils import clean_and_unify_arrays
@@ -42,6 +44,22 @@ try:
 except Exception:
     acorr_ljungbox = None
 
+try:  # pragma: no cover - optional dependency
+    import joblib  # type: ignore
+except Exception:  # pragma: no cover
+    joblib = None  # type: ignore
+
+
+def _save_model(model, path: str) -> None:
+    if not isinstance(path, str) or not path:
+        return
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    if joblib is not None:
+        joblib.dump(model, path)
+        return
+    with open(path, "wb") as f:
+        pickle.dump(model, f)
+
 
 def _arima_runtime_cfg(config):
     """
@@ -72,6 +90,8 @@ def _arima_runtime_cfg(config):
         "ljungbox_alpha": float(diag.get("ljungbox_alpha", 0.05)),
         "save_plots": bool(diag.get("save_plots", False)),
         "plot_path": str(diag.get("plot_path", "artifacts/arima_diagnostics")),
+        "max_eval_points": roll.get("max_eval_points"),
+        "max_train_rows": trn.get("max_train_rows"),
         "r_train": r_train, "r_val": r_val, "r_test": r_test,
     }
 
@@ -158,6 +178,16 @@ def train_arima_model(df, config):
         test_pred = np.array([last] * len(y_test), dtype=float)
         return y_val, val_pred, y_test, test_pred, None, None, {"degraded": True, "reason": "too little data"}
 
+    # === 可选：截断训练序列，避免超长数据导致训练极慢 ===
+    max_train_rows = rcfg.get("max_train_rows")
+    try:
+        if max_train_rows is None and len(series) > 20000:
+            max_train_rows = 20000
+        if isinstance(max_train_rows, (int, float)) and int(max_train_rows) > 0 and len(series) > int(max_train_rows):
+            series = series[-int(max_train_rows):]
+    except Exception:
+        pass
+
     # === 切分（内联 6:2:2 或 configs 中的比例）===
     n_total = int(len(series))
     n_train = max(1, int(round(n_total * rcfg["r_train"])))
@@ -178,7 +208,20 @@ def train_arima_model(df, config):
     except Exception as e:
         print(f"[ARIMA][Model] info unavailable: {e}")
 
-    # === 验证/测试：逐点滚动 + 周期重拟合 ===
+    # === 验证/测试：逐点滚动 + 周期重拟合（可选裁剪，避免超长评估耗时） ===
+    max_eval_points = rcfg.get("max_eval_points")
+    try:
+        if max_eval_points is None and (len(y_val) > 3000 or len(y_test) > 3000):
+            max_eval_points = 2000
+        if isinstance(max_eval_points, (int, float)) and int(max_eval_points) > 0:
+            cap = int(max_eval_points)
+            if len(y_val) > cap:
+                y_val = y_val[-cap:]
+            if len(y_test) > cap:
+                y_test = y_test[-cap:]
+    except Exception:
+        pass
+
     if rcfg["rolling_enabled"]:
         y_val_pred  = _rolling_forecast(y_train, y_val,  config, initial_model=base_model) if y_val.size else np.array([], float)
         hist_tv     = np.concatenate([y_train, y_val], axis=0)
@@ -282,5 +325,14 @@ def train_arima_model(df, config):
         best_params = None
     if not _ARIMA_AVAILABLE:
         best_params = {"degraded": True, "reason": "pmdarima not installed"}
+
+    # Persist model for registry-based inference
+    arts = config.setdefault("artifacts", {})
+    model_path = arts.get("model_path")
+    if isinstance(model_path, str) and model_path:
+        try:
+            _save_model(final_model, model_path)
+        except Exception:
+            pass
 
     return val_true, val_forecast, test_true, test_forecast, final_model, test_forecast_df, best_params

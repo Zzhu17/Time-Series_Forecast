@@ -1,10 +1,27 @@
 import os, json
+import pickle
 import pandas as pd
 import numpy as np
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 from utils.array_utils import clean_and_unify_arrays
 from models.random_forest import build_random_forest
+
+try:  # pragma: no cover - optional dependency
+    import joblib  # type: ignore
+except Exception:  # pragma: no cover
+    joblib = None  # type: ignore
+
+
+def _save_model(model, path: str) -> None:
+    if not isinstance(path, str) or not path:
+        return
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    if joblib is not None:
+        joblib.dump(model, path)
+        return
+    with open(path, "wb") as f:
+        pickle.dump(model, f)
 
 def train_random_forest_model(df: pd.DataFrame, config):
     """
@@ -41,6 +58,13 @@ def train_random_forest_model(df: pd.DataFrame, config):
 
     # 4) 强制 Optuna 调参：把 configs.yaml 的 optimization.n_trials 写入环境变量
     n_trials = int((config.get("optimization", {}) or {}).get("n_trials", 50))  # 默认 50
+    n_rows = int(len(work))
+    if n_rows > 50000:
+        n_trials = min(n_trials, 10)
+    elif n_rows > 20000:
+        n_trials = min(n_trials, 20)
+    elif n_rows > 10000:
+        n_trials = min(n_trials, 30)
     os.environ["OPTUNA_N_TRIALS"] = str(n_trials)  # models/random_forest.py 兼容读取
     os.environ["RF_N_TRIALS"] = str(n_trials)      # 同步一份，确保无论读哪个 key 都生效  [oai_citation:0‡configs.yaml](file-service://file-LvUz4wMVdpTQWJSmE8ievv)
 
@@ -67,6 +91,15 @@ def train_random_forest_model(df: pd.DataFrame, config):
     os.makedirs(os.path.dirname(feat_path), exist_ok=True)
     with open(feat_path, "w", encoding="utf-8") as f:
         json.dump(feature_cols, f, ensure_ascii=False)
+    arts["feature_cols"] = list(feature_cols)
+
+    # 8.1) 落盘模型（预测端加载）
+    model_path = arts.get("model_path")
+    if isinstance(model_path, str) and model_path:
+        try:
+            _save_model(model, model_path)
+        except Exception:
+            pass
 
     # 9) 将最优超参暴露到 artifacts，供 app 的“最佳超参”面板读取
     arts["randomforest_params"] = best_params

@@ -6,7 +6,7 @@ from typing import Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from server.xgb_loader import XGBPredictor
+from services.xgb_loader import XGBPredictor
 
 
 def baseline_predict(df: pd.DataFrame, value_col: str, horizon: int) -> np.ndarray:

@@ -1,0 +1,12 @@
+.git
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+.env
+.env.*
+Project/artifacts
+Project/output
+Project/Data
+Project/Universal Time-Series Forecast

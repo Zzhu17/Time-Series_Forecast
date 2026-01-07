@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+from ui.api_client import file_hash, list_model_registry, predict_online_file_cached
 from visualizations.plot import df_from_long, render_true_pred
 
 
@@ -15,8 +16,47 @@ def render_controls():
         st.caption("Block step is faster with no error accumulation; step-by-step is smoother but slower and accumulates errors.")
         allow_degrade = st.checkbox("Allow degrade (fallback to baseline if Required Core is missing)", value=False)
         st.caption("When enabled: online inference falls back to a baseline if required features are missing; training/eval may also return baseline with degraded=True.")
+        online_model_name = st.selectbox(
+            "Online model",
+            ["Informer", "ARIMA", "Prophet", "RandomForest", "LSTM", "XGBoost"],
+            index=0,
+            key="online_model_name",
+        )
     online_click = st.button("Predict only (online rolling)", type="secondary")
-    return horizon_days, step_mode, allow_degrade, online_click
+    return horizon_days, step_mode, allow_degrade, online_click, online_model_name
+
+
+def render_model_version_selector(api_url: str, model_name: str) -> tuple[str | None, str | None]:
+    if str(model_name).lower() != "informer":
+        st.caption("Online inference model selection is available for Informer only.")
+        return None, None
+
+    try:
+        models = list_model_registry(api_url)
+    except Exception as e:
+        st.caption(f"Model registry unavailable: {e}")
+        return None, None
+    if not models:
+        st.caption("No registered models found yet.")
+        return None, None
+
+    filtered = [m for m in models if str(m.get("name", "")).lower() == str(model_name).lower()]
+    if not filtered:
+        st.caption(f"No registered models for {model_name}.")
+        return None, None
+
+    options = ["latest"]
+    lookup = {"latest": (None, None)}
+    for rec in filtered:
+        mid = str(rec.get("id") or "")
+        ver = str(rec.get("version") or "")
+        stage = str(rec.get("stage") or "")
+        label = f"{ver} | {mid[:8]} | {stage}"
+        options.append(label)
+        lookup[label] = (mid, ver)
+
+    choice = st.selectbox("Online model version", options, index=0)
+    return lookup.get(choice, (None, None))
 
 
 def run_online_inference(
@@ -25,82 +65,60 @@ def run_online_inference(
     time_col: str,
     value_col: str,
     feature_cols,
+    model_name: str,
     device_choice: str,
     allow_degrade: bool,
     horizon_days: int,
     step_mode: str,
     mime_csv: str,
-    torch_module=None,
+    api_url: str,
+    uploaded_bytes: bytes,
+    uploaded_name: str,
+    model_id: str | None,
+    model_version: str | None,
 ):
-    config_pred = {
-        "device": device_choice,
-        "default": {
-            "time_col": time_col,
-            "value_col": value_col,
-            "device": device_choice,
-            "dtype": "float32",
-        },
-        "model_config": {
-            "Informer": {
-                "seq_len": 96,
-                "label_len": 48,
-                "pred_len": 24,
-                "feature_cols": feature_cols,
-            }
-        },
-        "artifacts": {
-            "model_path": "artifacts/informer_model.pth",
-            "scaler_path": "artifacts/scaler.pkl",
-            "residual_model_path": "artifacts/residual_model.pkl",
-            "feature_cols_path": "artifacts/feature_cols.json",
-        },
-        "prediction": {
-            "rolling": {
-                "enabled": True,
-                "step": None,
-                "mode": "overwrite",
-            },
-            "degrade": {"enabled": bool(allow_degrade), "mode": "naive_last"},
-        },
-    }
+    if str(model_name).lower() != "informer":
+        st.info("Non-Informer online inference runs one-step rolling. Horizon/step settings may be ignored.")
 
     st.caption(f"Feature columns (fixed order for train/predict): {feature_cols}")
-
     horizon_steps = int(24 * horizon_days)
     step_val = None if step_mode.startswith("Block") else 1
 
-    try:
-        _torch = torch_module
-        if _torch is None:
-            try:
-                import torch as _t  # type: ignore
-                _torch = _t
-            except Exception:
-                _torch = None
-        if _torch is None:
-            raise RuntimeError("Torch is not installed; cannot load InformerPredictor. Install: `pip install torch`")
-        from models.informer.predict import InformerPredictor  # lazy import (requires torch)
-
-        predictor = InformerPredictor(config_pred)
-    except Exception as e:
-        st.error("Failed to load trained model (train once first, or check dependencies/paths).")
-        st.exception(e)
-        st.stop()
-
-    with st.spinner("Running online rolling inference..."):
+    file_bytes = uploaded_bytes or df.to_csv(index=False).encode("utf-8")
+    file_name = uploaded_name or "online.csv"
+    with st.spinner("Calling API for online rolling inference..."):
         try:
-            merged = predictor.rolling_predict(df.copy(), horizon=horizon_steps, step=step_val, mode="overwrite")
+            resp = predict_online_file_cached(
+                api_url=api_url,
+                file_hash_value=file_hash(file_bytes),
+                file_bytes=file_bytes,
+                filename=file_name,
+                model_name=model_name,
+                time_col=time_col,
+                value_col=value_col,
+                horizon_days=horizon_days,
+                step_mode=step_mode,
+                allow_degrade=allow_degrade,
+                device=device_choice,
+                model_id=model_id,
+                model_version=model_version,
+            )
         except Exception as e:
             st.error("Online rolling inference failed.")
             st.exception(e)
             st.stop()
 
-    dblk = (config_pred.get("data", {}) or {})
-    if bool(dblk.get("degraded", False)):
-        missing_req = dblk.get("missing_required_core")
-        dropped_opt = dblk.get("dropped_optional_features")
-        reason = dblk.get("degraded_reason", "unknown")
-        mode = dblk.get("degraded_mode", "baseline")
+    merged = np.asarray(resp.get("predictions") or []).reshape(-1)
+    if merged.size != len(df):
+        st.error("Online prediction length mismatch. Re-train the model and try again.")
+        return
+    degraded = bool(resp.get("degraded", False))
+    reason = resp.get("degraded_reason", "unknown")
+    mode = resp.get("degraded_mode", "baseline")
+    missing_req = resp.get("missing_required_core")
+    dropped_opt = resp.get("dropped_optional_features")
+
+    if degraded:
         st.error(
             "⚠️ Prediction is degraded (degraded=True): features are missing/mismatched; "
             "switched to a baseline predictor. Do not interpret as normal results."
@@ -110,10 +128,6 @@ def run_online_inference(
             st.caption(f"Missing Required Core: {missing_req}")
         if dropped_opt:
             st.caption(f"Dropped optional features: {dropped_opt}")
-        if dblk.get("degraded_error"):
-            st.caption(f"Error: {dblk.get('degraded_error')}")
-
-    merged = np.asarray(merged).reshape(-1)
     mask = ~np.isnan(merged)
     if mask.sum() == 0:
         st.warning("No valid prediction region (data too short or parameters mismatch).")
@@ -137,11 +151,11 @@ def run_online_inference(
         "timestamps": pd.to_datetime(df[time_col]).astype(str).tolist(),
         "y_true": pd.to_numeric(df[value_col], errors="coerce").astype(float).tolist(),
         "yhat": merged.astype(float).tolist(),
-        "degraded": bool(dblk.get("degraded", False)),
-        "degraded_reason": dblk.get("degraded_reason"),
-        "degraded_mode": dblk.get("degraded_mode"),
-        "missing_required_core": dblk.get("missing_required_core"),
-        "dropped_optional_features": dblk.get("dropped_optional_features"),
+        "degraded": degraded,
+        "degraded_reason": reason,
+        "degraded_mode": mode,
+        "missing_required_core": missing_req,
+        "dropped_optional_features": dropped_opt,
     }
 
     st.markdown("### 📈 Online rolling inference — Curve", unsafe_allow_html=True)
@@ -170,17 +184,17 @@ def run_online_inference(
             "y_true": online_long["y_true"],
             "yhat": online_long["yhat"],
         }).tail(200)
-        st.dataframe(view_df, use_container_width=True)
+        st.dataframe(view_df, width="stretch")
 
     with st.expander("🧾 Online details (full)", expanded=False):
         full_df = df_from_long(online_long, time_col)
-        if bool(dblk.get("degraded", False)):
+        if degraded:
             full_df["degraded"] = True
-            full_df["degraded_reason"] = str(dblk.get("degraded_reason"))
-            full_df["degraded_mode"] = str(dblk.get("degraded_mode"))
-            full_df["missing_required_core"] = str(dblk.get("missing_required_core"))
-            full_df["dropped_optional_features"] = str(dblk.get("dropped_optional_features"))
-        st.dataframe(full_df, use_container_width=True)
+            full_df["degraded_reason"] = str(reason)
+            full_df["degraded_mode"] = str(mode)
+            full_df["missing_required_core"] = str(missing_req)
+            full_df["dropped_optional_features"] = str(dropped_opt)
+        st.dataframe(full_df, width="stretch")
         try:
             st.download_button(
                 label="Download online full details CSV",

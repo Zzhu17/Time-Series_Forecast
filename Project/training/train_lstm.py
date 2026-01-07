@@ -1,3 +1,6 @@
+import json
+import os
+import pickle
 import numpy as np
 import pandas as pd
 import torch
@@ -29,9 +32,33 @@ except Exception:  # pragma: no cover - minimal fallback for environments withou
             X = np.asarray(X, dtype=np.float32)
             return (X - self.mean_) / self.scale_
 
-        def inverse_transform(self, X):
-            X = np.asarray(X, dtype=np.float32)
-            return X * self.scale_ + self.mean_
+    def inverse_transform(self, X):
+        X = np.asarray(X, dtype=np.float32)
+        return X * self.scale_ + self.mean_
+
+try:  # pragma: no cover - optional dependency
+    import joblib  # type: ignore
+except Exception:  # pragma: no cover
+    joblib = None  # type: ignore
+
+
+def _save_pickle(obj, path: str) -> None:
+    if not isinstance(path, str) or not path:
+        return
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    if joblib is not None:
+        joblib.dump(obj, path)
+        return
+    with open(path, "wb") as f:
+        pickle.dump(obj, f)
+
+
+def _save_json(obj, path: str) -> None:
+    if not isinstance(path, str) or not path:
+        return
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False)
 
 
 def _dtype_from_config(config: dict):
@@ -416,6 +443,29 @@ def train_lstm_model(df: pd.DataFrame, config: dict):
 
     # For interface compatibility: test_forecast_df mirrors test_dense
     test_forecast_df = test_dense.copy() if isinstance(test_dense, pd.DataFrame) else None
+
+    # ---- persist artifacts for registry-based inference ----
+    artifacts["feature_cols"] = list(feature_cols)
+    artifacts["best_params"] = dict(best_params)
+    model_path = artifacts.get("model_path")
+    if isinstance(model_path, str) and model_path:
+        try:
+            os.makedirs(os.path.dirname(model_path) or ".", exist_ok=True)
+            torch.save(model.state_dict(), model_path)
+        except Exception:
+            pass
+    scaler_path = artifacts.get("scaler_path")
+    if scaler is not None and isinstance(scaler_path, str) and scaler_path:
+        try:
+            _save_pickle(scaler, scaler_path)
+        except Exception:
+            pass
+    feat_path = artifacts.get("feature_cols_path")
+    if isinstance(feat_path, str) and feat_path:
+        try:
+            _save_json(list(feature_cols), feat_path)
+        except Exception:
+            pass
 
     return (
         val_true_u,

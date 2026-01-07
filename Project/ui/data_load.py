@@ -101,5 +101,5 @@ def render_preview(df: pd.DataFrame, time_col: str, value_col: str):
     st.markdown("<div class='tsf-card'>", unsafe_allow_html=True)
     st.markdown("### 📄 Data preview", unsafe_allow_html=True)
     st.caption(f"Time column: {time_col} | Target: {value_col}")
-    st.dataframe(df.head(10), use_container_width=True)
+    st.dataframe(df.head(10), width="stretch")
     st.markdown("</div>", unsafe_allow_html=True)

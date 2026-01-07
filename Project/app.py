@@ -2,7 +2,9 @@ import os
 import pandas as pd
 import streamlit as st
 
-from ui import actions, data_load, model_config, online, results, state, theme
+from ui import actions, data_load, model_config, online, predict_only, results, state, theme
+from ui.model_registry import render_model_registry
+from ui.api_client import render_api_settings
 
 # Disable pipeline-side Matplotlib plotting (can hang on macOS); the app renders plots itself.
 os.environ["TSF_PIPELINE_PLOT"] = "0"
@@ -11,16 +13,12 @@ os.environ["TSF_DEBUG_CONTINUOUS"] = "0"
 
 MIME_CSV = "text/csv"
 
-try:
-    import torch  # type: ignore
-except Exception:
-    torch = None  # type: ignore[assignment]
-
 
 def main():
     theme.setup_page()
     theme.render_hero()
     state.init_state()
+    api_url = render_api_settings()
 
     with st.container():
         st.markdown("<div class='tsf-card'>", unsafe_allow_html=True)
@@ -50,7 +48,15 @@ def main():
         st.markdown("<div class='tsf-card'>", unsafe_allow_html=True)
         st.markdown("### Online rolling inference", unsafe_allow_html=True)
         st.markdown("<p class='section-note'>Run fast rolling forecasts without retraining; choose horizon and step.</p>", unsafe_allow_html=True)
-        horizon_days, step_mode, allow_degrade, online_click = online.render_controls()
+        horizon_days, step_mode, allow_degrade, online_click, online_model_name = online.render_controls()
+        online_model_id, online_model_version = online.render_model_version_selector(api_url, online_model_name)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with st.container():
+        st.markdown("<div class='tsf-card'>", unsafe_allow_html=True)
+        st.markdown("### Predict only (API)", unsafe_allow_html=True)
+        st.markdown("<p class='section-note'>Run batch prediction without training.</p>", unsafe_allow_html=True)
+        predict_model_name, predict_horizon, predict_allow_degrade, predict_click = predict_only.render_controls()
         st.markdown("</div>", unsafe_allow_html=True)
 
     if uploaded is None:
@@ -62,6 +68,10 @@ def main():
     except Exception as e:
         st.error(f"Failed to read CSV: {e}")
         st.stop()
+    try:
+        uploaded_bytes = uploaded.getvalue()
+    except Exception:
+        uploaded_bytes = b""
 
     time_col, value_col, feature_cols, _profiles = data_load.select_columns(
         df, run_click=run_click, online_click=online_click
@@ -76,12 +86,17 @@ def main():
             time_col=time_col,
             value_col=value_col,
             feature_cols=feature_cols,
+            model_name=online_model_name,
             device_choice=device_choice,
             allow_degrade=allow_degrade,
             horizon_days=int(horizon_days),
             step_mode=step_mode,
             mime_csv=MIME_CSV,
-            torch_module=torch,
+            api_url=api_url,
+            uploaded_bytes=uploaded_bytes,
+            uploaded_name=getattr(uploaded, "name", None) or "online.csv",
+            model_id=online_model_id,
+            model_version=online_model_version,
         )
 
     if run_click:
@@ -96,6 +111,20 @@ def main():
             allow_degrade=allow_degrade,
             uploaded_name=getattr(uploaded, "name", None),
             results_container=results_container,
+            api_url=api_url,
+            uploaded_bytes=uploaded_bytes,
+        )
+
+    if predict_click:
+        predict_only.run_predict_only(
+            api_url=api_url,
+            df=df.copy(),
+            time_col=time_col,
+            value_col=value_col,
+            model_name=predict_model_name,
+            horizon=predict_horizon,
+            allow_degrade=predict_allow_degrade,
+            results_container=results_container,
         )
 
     results.render_cached_results(
@@ -104,6 +133,8 @@ def main():
         time_col=time_col,
         value_col=value_col,
     )
+
+    render_model_registry(api_url)
 
     if st.button("Clear cached results", type="secondary", key="clear_cached_results"):
         state.clear_cached_results()

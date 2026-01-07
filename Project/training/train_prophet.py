@@ -1,8 +1,26 @@
+import os
+import pickle
 from prophet import Prophet
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 from utils.array_utils import clean_and_unify_arrays
 import numpy as np
 import pandas as pd
+
+try:  # pragma: no cover - optional dependency
+    import joblib  # type: ignore
+except Exception:  # pragma: no cover
+    joblib = None  # type: ignore
+
+
+def _save_model(model, path: str) -> None:
+    if not isinstance(path, str) or not path:
+        return
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    if joblib is not None:
+        joblib.dump(model, path)
+        return
+    with open(path, "wb") as f:
+        pickle.dump(model, f)
 
 def train_prophet_model(df, config):
     # 数据有效性检查
@@ -10,6 +28,18 @@ def train_prophet_model(df, config):
         raise ValueError("❌ 输入数据包含缺失值，请先进行清洗处理。")
     if len(df) < 30:
         raise ValueError("❌ 数据行数不足，至少需要30行数据才能训练 Prophet 模型。")
+
+    # 限制超长序列，避免训练过慢
+    max_train_rows = None
+    try:
+        pcfg = (config.get("prophet") or {}) if isinstance(config, dict) else {}
+        max_train_rows = pcfg.get("max_train_rows")
+        if max_train_rows is None and len(df) > 20000:
+            max_train_rows = 20000
+        if isinstance(max_train_rows, (int, float)) and int(max_train_rows) > 0 and len(df) > int(max_train_rows):
+            df = df.tail(int(max_train_rows)).copy()
+    except Exception:
+        pass
 
     # Ensure Prophet-compatible column names
     time_col = config.get("time_col", "date")
@@ -43,5 +73,14 @@ def train_prophet_model(df, config):
     final_model = model
     test_forecast_df = forecast
     best_params = None
+
+    # Persist model for registry-based inference
+    arts = config.setdefault("artifacts", {})
+    model_path = arts.get("model_path")
+    if isinstance(model_path, str) and model_path:
+        try:
+            _save_model(final_model, model_path)
+        except Exception:
+            pass
 
     return val_true, val_forecast, test_true, test_forecast, final_model, test_forecast_df, best_params

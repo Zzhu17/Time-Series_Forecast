@@ -1,1 +1,1 @@
-"""Services package: pipeline loader, snapshots, and theme helpers."""
+"""Server-side helpers for request parsing and data prep."""

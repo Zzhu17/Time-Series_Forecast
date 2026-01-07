@@ -215,7 +215,7 @@ def render_true_pred(
                 .encode(x=alt.X("ts:T", title=None), y=alt.Y("pred:Q", title=None))
                 .transform_filter(f"datum._row % {max(1, int(marker_every))} == 0")
             )
-            st.altair_chart((l1 + l2 + pts).properties(height=280, title=title), use_container_width=True)
+            st.altair_chart((l1 + l2 + pts).properties(height=280, title=title), width="stretch")
         except Exception:
             st.line_chart(pd.DataFrame({"true": yt, "pred": yp}, index=pd.to_datetime(xs, errors="coerce")))
         return
@@ -242,7 +242,7 @@ def render_true_pred(
         margin=dict(l=10, r=10, t=40, b=10),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
-    st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True, "displaylogo": False})
+    st.plotly_chart(fig, width="stretch", config={"scrollZoom": True, "displaylogo": False})
 
 
 def render_val_test(

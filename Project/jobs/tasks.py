@@ -6,11 +6,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any, Dict
 
-import pandas as pd
-
-from server.db import SessionLocal, TaskRecord, init_db
-from server.logging_utils import setup_json_logger, log_json
-from server.predict_utils import baseline_predict, predict_with_xgboost
+from services.db import SessionLocal, TaskRecord, init_db
+from utils.logging_utils import setup_json_logger, log_json
+from services.train_service import run_training_task
 
 # Initialize DB (sqlite by default)
 init_db()
@@ -36,48 +34,26 @@ def _run_task(task_id: str, payload: Dict[str, Any]):
         session.commit()
         log_json(LOGGER, "task_started", task_id=task_id, model=payload.get("model_name"))
 
-        model = str(payload.get("model_name", "baseline")).lower()
-        time_col = str(payload.get("time_col", "date"))
-        value_col = str(payload.get("value_col", "value"))
-        horizon = int(payload.get("horizon", 1))
-        rows = payload.get("rows") or []
-        df = pd.DataFrame(rows)
+        result = run_training_task(payload, task_id=task_id)
+        metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
+        artifacts = result.get("artifacts", {}) if isinstance(result, dict) else {}
+        model_record = result.get("model_record") if isinstance(result, dict) else None
+        degraded = bool(result.get("degraded", False)) if isinstance(result, dict) else False
+        reason = result.get("degraded_reason") if isinstance(result, dict) else None
 
-        degraded = False
-        reason = None
-        preds = None
-
-        if model == "xgboost":
-            try:
-                preds, degraded, used_model, reason = predict_with_xgboost(
-                    df,
-                    time_col=time_col,
-                    value_col=value_col,
-                    horizon=horizon,
-                    baseline_fallback=True,
-                )
-                model = used_model
-            except Exception as e:
-                degraded = True
-                reason = f"xgboost failed: {e}"
-
-        if preds is None:
-            preds = baseline_predict(df, value_col, horizon)
-            if model != "baseline" and not reason:
-                reason = f"{model} not available; baseline used"
-
-        metrics = {"model": model, "degraded": degraded, "reason": reason}
         rec.metrics = TaskRecord.dumps(metrics)
-        rec.artifacts = TaskRecord.dumps({"predictions": preds.tolist() if preds is not None else []})
+        rec.artifacts = TaskRecord.dumps(
+            {"artifacts": artifacts, "model_record": model_record, "degraded_reason": reason}
+        )
         rec.status = "success"
-        rec.degraded = bool(degraded)
+        rec.degraded = degraded
         rec.updated_at = _now()
         session.commit()
         log_json(
             LOGGER,
             "task_succeeded",
             task_id=task_id,
-            model=model,
+            model=payload.get("model_name"),
             degraded=degraded,
             reason=reason,
             duration_ms=int((rec.updated_at - start_ts).total_seconds() * 1000),

@@ -1,0 +1,7 @@
+logging:
+  level: DEBUG
+
+debug:
+  enabled: true
+  print_shapes: true
+  print_samples: true

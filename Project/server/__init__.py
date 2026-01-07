@@ -1,1 +1,1 @@
-"""Server package for API, tasks, and registry."""
+"""Deprecated compatibility package. Use api/ services/ schemas/ jobs/ instead."""

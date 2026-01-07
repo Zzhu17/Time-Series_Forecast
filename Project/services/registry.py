@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy import desc
 
-from server.db import ModelRecord, SessionLocal, init_db
+from services.db import ModelRecord, SessionLocal, init_db
 
 init_db()
 
@@ -92,6 +92,18 @@ def latest_production() -> Optional[Dict[str, Any]]:
             .order_by(desc(ModelRecord.promoted_at))
             .first()
         )
+        return rec.to_dict() if rec else None
+    finally:
+        session.close()
+
+
+def latest_model_for_name(name: str, stage: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    session = SessionLocal()
+    try:
+        q = session.query(ModelRecord).filter(ModelRecord.name == name)
+        if stage:
+            q = q.filter(ModelRecord.stage == stage)
+        rec = q.order_by(desc(ModelRecord.created_at)).first()
         return rec.to_dict() if rec else None
     finally:
         session.close()

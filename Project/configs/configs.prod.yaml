@@ -1,0 +1,7 @@
+logging:
+  level: WARNING
+
+debug:
+  enabled: false
+  print_shapes: false
+  print_samples: false

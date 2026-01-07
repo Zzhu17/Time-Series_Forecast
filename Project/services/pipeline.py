@@ -1291,19 +1291,42 @@ def run_pipeline_and_update_state(
                     return None
             return p
 
-        snap_results["data"]["plot_data"] = {"val": _coerce_plot(val_plot), "test": _coerce_plot(test_plot)}
+        plot_blob = {"val": _coerce_plot(val_plot), "test": _coerce_plot(test_plot)}
+        snap_results["data"]["plot_data"] = plot_blob
+        try:
+            results.setdefault("data", {})
+            results["data"]["plot_data"] = plot_blob
+        except Exception:
+            pass
     if isinstance(mean_abs_true_val, (int, float)) and np.isfinite(float(mean_abs_true_val)) and float(mean_abs_true_val) > 0:
         snap_results.setdefault("data", {})
         snap_results["data"]["mean_abs_true_val"] = float(mean_abs_true_val)
+        try:
+            results.setdefault("data", {})
+            results["data"]["mean_abs_true_val"] = float(mean_abs_true_val)
+        except Exception:
+            pass
     if isinstance(mean_abs_true_test, (int, float)) and np.isfinite(float(mean_abs_true_test)) and float(mean_abs_true_test) > 0:
         snap_results.setdefault("data", {})
         snap_results["data"]["mean_abs_true_test"] = float(mean_abs_true_test)
+        try:
+            results.setdefault("data", {})
+            results["data"]["mean_abs_true_test"] = float(mean_abs_true_test)
+        except Exception:
+            pass
 
     save_last_results_json({"meta": snap_meta, "results": snap_results})
 
-    # Update session_state if running under Streamlit
+    # Update session_state only when running under Streamlit to avoid bare-mode warnings.
     try:
         import streamlit as st
+        try:
+            from streamlit.runtime.scriptrunner import get_script_run_ctx  # type: ignore
+        except Exception:
+            get_script_run_ctx = None
+
+        if get_script_run_ctx is not None and get_script_run_ctx() is None:
+            return results
 
         st.session_state["last_results"] = snap_results
         st.session_state["last_meta"] = snap_meta
