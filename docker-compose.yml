@@ -4,20 +4,23 @@ services:
     env_file:
       - .env
     environment:
-      TSF_ENV: ${TSF_ENV:-dev}
       PYTHONPATH: /app/Project
+      CELERY_ENABLED: ${CELERY_ENABLED:-1}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
     command: uvicorn api.app:app --host 0.0.0.0 --port ${API_PORT:-8000}
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
       - ./Project:/app/Project
+    depends_on:
+      - redis
 
   ui:
     build: .
     env_file:
       - .env
     environment:
-      TSF_ENV: ${TSF_ENV:-dev}
       TSF_API_URL: ${TSF_API_URL:-http://api:8000}
       PYTHONPATH: /app/Project
     command: streamlit run Project/app.py --server.address 0.0.0.0 --server.port ${UI_PORT:-8501}
@@ -27,3 +30,23 @@ services:
       - "${UI_PORT:-8501}:8501"
     volumes:
       - ./Project:/app/Project
+
+  worker:
+    build: .
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app/Project
+      CELERY_ENABLED: ${CELERY_ENABLED:-1}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
+    command: celery -A jobs.worker worker --loglevel=info
+    depends_on:
+      - redis
+    volumes:
+      - ./Project:/app/Project
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"

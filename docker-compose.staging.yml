@@ -1,0 +1,20 @@
+services:
+  api:
+    env_file:
+      - .env.staging
+    ports:
+      - "8001:8000"
+
+  ui:
+    env_file:
+      - .env.staging
+    ports:
+      - "8502:8501"
+
+  worker:
+    env_file:
+      - .env.staging
+
+  redis:
+    ports:
+      - "6380:6379"

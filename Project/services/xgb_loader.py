@@ -62,26 +62,24 @@ class XGBPredictor:
         degraded = False
         degraded_reason = None
 
-        if contract:
-            try:
-                aligned, report, usable_cols = align_predict_df(
+        if contract and isinstance(contract.get("feature_cols"), list):
+            expected_cols = [str(c) for c in contract.get("feature_cols") if str(c).strip()]
+            if not expected_cols:
+                contract = None
+            else:
+                aligned, _report, usable_cols = align_predict_df(
                     df,
                     contract=contract,
                     time_col=self.time_col,
                     value_col=self.value_col,
                     tail_rows=horizon + 5,  # minimal history for lags/rolling
                 )
-                if report.get("missing_required"):
-                    degraded = True
-                    degraded_reason = f"missing required core: {report.get('missing_required')}"
+                if list(usable_cols) != list(expected_cols):
+                    dropped = sorted(set(expected_cols) - set(usable_cols))
+                    raise ValueError(f"optional features dropped: {dropped}")
                 df_feat = aligned
-                feature_cols = [c for c in usable_cols if c != self.value_col]
-            except Exception as e:
-                degraded = True
-                degraded_reason = f"contract alignment failed: {e}"
-                feature_cols = [c for c in df.columns if c not in (self.time_col, self.value_col)]
-                df_feat = df.copy()
-        else:
+                feature_cols = [c for c in expected_cols if c != self.value_col]
+        if not contract:
             degraded = True
             degraded_reason = "no feature contract found; using raw columns"
             feature_cols = [c for c in df.columns if c not in (self.time_col, self.value_col)]

@@ -6,7 +6,8 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import health, models, predict, tasks, train
+from api.observability import add_observability
+from api.routes import alerts, health, metrics, models, predict, tasks, train
 from api.security import verify_api_token
 
 app = FastAPI(title="TS Forecast API", version="0.1.0", dependencies=[Depends(verify_api_token)])
@@ -25,7 +26,11 @@ frontend_dist = Path(__file__).resolve().parents[1] / "Universal Time-Series For
 if frontend_dist.exists():
     app.mount("/ui", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
 
+add_observability(app)
+
 app.include_router(health.router)
+app.include_router(metrics.router)
+app.include_router(alerts.router)
 app.include_router(predict.router)
 app.include_router(train.router)
 app.include_router(tasks.router)

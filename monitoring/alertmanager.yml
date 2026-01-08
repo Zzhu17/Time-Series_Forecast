@@ -1,0 +1,12 @@
+route:
+  receiver: "api-webhook"
+  group_by: ["alertname"]
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 1h
+
+receivers:
+  - name: "api-webhook"
+    webhook_configs:
+      - url: "http://api:8000/alerts"
+        send_resolved: true

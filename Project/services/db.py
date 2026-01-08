@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from datetime import datetime
 from typing import Any, Dict
@@ -54,9 +55,18 @@ class TaskRecord(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     def to_dict(self) -> Dict[str, Any]:
+        def _sanitize(obj: Any):
+            if isinstance(obj, float):
+                return obj if math.isfinite(obj) else None
+            if isinstance(obj, list):
+                return [_sanitize(v) for v in obj]
+            if isinstance(obj, dict):
+                return {k: _sanitize(v) for k, v in obj.items()}
+            return obj
+
         def _loads(x):
             try:
-                return json.loads(x) if x else None
+                return _sanitize(json.loads(x)) if x else None
             except Exception:
                 return None
 
@@ -95,9 +105,18 @@ class ModelRecord(Base):
     promoted_at = Column(DateTime, nullable=True)
 
     def to_dict(self) -> Dict[str, Any]:
+        def _sanitize(obj: Any):
+            if isinstance(obj, float):
+                return obj if math.isfinite(obj) else None
+            if isinstance(obj, list):
+                return [_sanitize(v) for v in obj]
+            if isinstance(obj, dict):
+                return {k: _sanitize(v) for k, v in obj.items()}
+            return obj
+
         def _loads(x):
             try:
-                return json.loads(x) if x else None
+                return _sanitize(json.loads(x)) if x else None
             except Exception:
                 return None
 

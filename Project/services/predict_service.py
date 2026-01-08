@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
+import time
 
 import numpy as np
 import pandas as pd
 
 from configs.config import load_yaml_config
-from services.predict_utils import baseline_predict
+from services.predict_utils import baseline_predict, predict_with_xgboost
+from services.prediction_payloads import normalize_prediction_payload
 from services.registry import get_model, latest_model_for_name, list_models
 from services.predict_helpers import load_feature_cols, load_pickle, prepare_feature_frame
 from services.xgb_loader import XGBPredictor
+from utils.feature_contract import is_recomputable_name, safe_time_features
+from utils.feature_pipeline import align_predict_df
+from utils.feature_selection import load_feature_contract
+from utils.metrics import observe_predict
 from utils.target_transform import inverse_transform_array
 
 
@@ -30,6 +36,46 @@ def _find_model_record(
                 return rec
         return None
     return latest_model_for_name(model_name)
+
+
+class PredictionNotFoundError(Exception):
+    pass
+
+
+def _fallback_feature_contract(
+    feature_cols: list[str],
+    *,
+    time_col: str,
+    value_col: str,
+) -> Dict[str, Any]:
+    required_core: list[str] = []
+    repairable_core: list[str] = []
+    for c in feature_cols:
+        if c == time_col:
+            continue
+        if c in safe_time_features() or is_recomputable_name(c):
+            repairable_core.append(c)
+        else:
+            required_core.append(c)
+    if value_col not in required_core and value_col not in repairable_core and value_col in feature_cols:
+        required_core = [value_col] + required_core
+    return {
+        "feature_cols": list(feature_cols),
+        "required_core_cols": list(required_core),
+        "repairable_core_cols": list(repairable_core),
+        "core_cols": list(required_core),
+    }
+
+
+def _load_feature_contract(artifacts: Dict[str, Any] | None) -> Optional[Dict[str, Any]]:
+    if not isinstance(artifacts, dict):
+        return None
+    path = artifacts.get("feature_cols_path")
+    if isinstance(path, str) and path:
+        contract = load_feature_contract(path)
+        if isinstance(contract, dict):
+            return contract
+    return None
 
 
 def _build_informer_config(
@@ -103,6 +149,33 @@ def _inverse_target_with_scaler(
         return arr
 
 
+def _align_df_for_contract(
+    df: pd.DataFrame,
+    *,
+    feature_cols: list[str],
+    contract: Optional[Dict[str, Any]],
+    time_col: str,
+    value_col: str,
+    tail_rows: int,
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    contract_payload = contract or _fallback_feature_contract(
+        feature_cols,
+        time_col=time_col,
+        value_col=value_col,
+    )
+    aligned, report, usable_cols = align_predict_df(
+        df,
+        contract=contract_payload,
+        time_col=time_col,
+        value_col=value_col,
+        tail_rows=tail_rows,
+    )
+    if list(usable_cols) != list(feature_cols):
+        dropped = sorted(set(feature_cols) - set(usable_cols))
+        raise ValueError(f"optional features dropped: {dropped}")
+    return aligned, report
+
+
 def predict_from_registry(
     *,
     df: pd.DataFrame,
@@ -132,21 +205,24 @@ def predict_from_registry(
         raise err
 
     if model_key == "xgboost":
-        model_path = None
-        if isinstance(artifacts, dict):
-            model_path = artifacts.get("xgboost_model_path") or artifacts.get("model_path")
-            contract_path = artifacts.get("feature_cols_path")
-        else:
-            contract_path = None
-        predictor = XGBPredictor(
-            model_path=str(model_path) if model_path else "",
-            feature_contract_path=str(contract_path) if contract_path else None,
-            target_transform=None,
-            time_col=time_col,
-            value_col=value_col,
-        )
-        preds, _meta, degraded, reason = predictor.predict(df, horizon=horizon)
-        return preds, bool(degraded), "xgboost", reason or ""
+        try:
+            model_path = None
+            if isinstance(artifacts, dict):
+                model_path = artifacts.get("xgboost_model_path") or artifacts.get("model_path")
+                contract_path = artifacts.get("feature_cols_path")
+            else:
+                contract_path = None
+            predictor = XGBPredictor(
+                model_path=str(model_path) if model_path else "",
+                feature_contract_path=str(contract_path) if contract_path else None,
+                target_transform=None,
+                time_col=time_col,
+                value_col=value_col,
+            )
+            preds, _meta, degraded, reason = predictor.predict(df, horizon=horizon)
+            return preds, bool(degraded), "xgboost", reason or ""
+        except Exception as e:
+            return _fallback(e, "xgboost")
 
     if model_key == "randomforest":
         try:
@@ -156,8 +232,17 @@ def predict_from_registry(
             feature_cols = load_feature_cols(artifacts)
             if not feature_cols:
                 raise ValueError("randomforest feature_cols missing")
-            feat_df = prepare_feature_frame(
+            contract = _load_feature_contract(artifacts if isinstance(artifacts, dict) else None)
+            aligned_df, _rep = _align_df_for_contract(
                 df,
+                feature_cols=feature_cols,
+                contract=contract,
+                time_col=time_col,
+                value_col=value_col,
+                tail_rows=1,
+            )
+            feat_df = prepare_feature_frame(
+                aligned_df,
                 feature_cols=feature_cols,
                 time_col=time_col,
                 value_col=value_col,
@@ -190,8 +275,17 @@ def predict_from_registry(
                 except Exception:
                     pass
             seq_len = max(1, int(seq_len))
-            feat_df = prepare_feature_frame(
+            contract = _load_feature_contract(artifacts if isinstance(artifacts, dict) else None)
+            aligned_df, _rep = _align_df_for_contract(
                 df,
+                feature_cols=feature_cols,
+                contract=contract,
+                time_col=time_col,
+                value_col=value_col,
+                tail_rows=seq_len,
+            )
+            feat_df = prepare_feature_frame(
+                aligned_df,
                 feature_cols=feature_cols,
                 time_col=time_col,
                 value_col=value_col,
@@ -333,3 +427,80 @@ def predict_from_registry(
     # Unsupported model types fall back to baseline
     preds = baseline_predict(df, value_col, horizon)
     return preds, True, f"{model_key}->baseline", "model_not_supported"
+
+
+def run_prediction(payload: Dict[str, Any]) -> Dict[str, Any]:
+    start_ts = time.time()
+    model_name = "unknown"
+    try:
+        df, normalized, contract_report = normalize_prediction_payload(payload)
+
+        model_name = normalized["model_name"]
+        model = model_name.lower()
+        horizon = int(normalized.get("horizon", 1))
+        time_col = normalized["time_col"]
+        value_col = normalized["value_col"]
+        model_id = normalized.get("model_id")
+        model_version = normalized.get("model_version")
+        allow_degrade = bool(normalized.get("allow_degrade", False))
+
+        if model == "baseline":
+            preds = baseline_predict(df, value_col, horizon)
+            return {
+                "status": "ok",
+                "predictions": preds.tolist(),
+                "degraded": False,
+                "reason": None,
+                "used_model": "baseline",
+                "contract_report": contract_report,
+            }
+
+        if model_id or model_version or model in ("xgboost", "informer", "randomforest", "lstm", "arima", "prophet"):
+            try:
+                preds, degraded, used_model, reason = predict_from_registry(
+                    df=df,
+                    model_name=model,
+                    horizon=horizon,
+                    time_col=time_col,
+                    value_col=value_col,
+                    allow_degrade=allow_degrade,
+                    model_id=model_id,
+                    model_version=model_version,
+                )
+            except Exception as e:
+                if model_id or model_version:
+                    raise PredictionNotFoundError(str(e)) from e
+                if model == "xgboost":
+                    preds, degraded, used_model, reason = predict_with_xgboost(
+                        df,
+                        time_col=time_col,
+                        value_col=value_col,
+                        horizon=horizon,
+                        baseline_fallback=True,
+                    )
+                else:
+                    preds = baseline_predict(df, value_col, horizon)
+                    degraded = True
+                    used_model = f"{model}->baseline"
+                    reason = "model_not_available"
+
+            return {
+                "status": "ok",
+                "predictions": preds.tolist(),
+                "degraded": bool(degraded),
+                "reason": reason or None,
+                "used_model": used_model,
+                "contract_report": contract_report,
+            }
+
+        preds = baseline_predict(df, value_col, horizon)
+        return {
+            "status": "ok",
+            "predictions": preds.tolist(),
+            "degraded": True,
+            "reason": "model_not_supported",
+            "used_model": f"{model}->baseline",
+            "contract_report": contract_report,
+        }
+    finally:
+        observe_predict(model=model_name, duration=time.time() - start_ts)

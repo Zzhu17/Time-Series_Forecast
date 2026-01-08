@@ -1,0 +1,84 @@
+version: "3.9"
+
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - TSF_ENV=dev
+      - CELERY_ENABLED=1
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    volumes:
+      - ./Project/output:/app/Project/output
+      - ./Project/artifacts:/app/Project/artifacts
+    depends_on:
+      - redis
+
+  ui:
+    image: python:3.10-slim
+    working_dir: /app
+    volumes:
+      - ./Project:/app/Project
+    command: >
+      sh -c "pip install --no-cache-dir -r /app/Project/requirements.txt
+      && streamlit run /app/Project/app.py --server.port 8501 --server.address 0.0.0.0"
+    ports:
+      - "8501:8501"
+    environment:
+      - TSF_API_URL=http://api:8000
+    depends_on:
+      - api
+
+  worker:
+    build: .
+    command: celery -A jobs.worker worker --loglevel=info
+    environment:
+      - TSF_ENV=dev
+      - CELERY_ENABLED=1
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    volumes:
+      - ./Project/output:/app/Project/output
+      - ./Project/artifacts:/app/Project/artifacts
+      - ./Project:/app/Project
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yaml:/etc/prometheus/alerts.yaml:ro
+    depends_on:
+      - api
+      - alertmanager
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus

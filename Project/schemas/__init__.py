@@ -10,6 +10,8 @@ from schemas.api import (  # noqa: F401
     TaskResponse,
     TrainRequest,
 )
+from schemas.contract import FeatureContractReport  # noqa: F401
+from schemas.training import TrainingPayload  # noqa: F401
 
 __all__ = [
     "ModelInfo",
@@ -20,4 +22,6 @@ __all__ = [
     "Row",
     "TaskResponse",
     "TrainRequest",
+    "FeatureContractReport",
+    "TrainingPayload",
 ]

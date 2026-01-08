@@ -19,6 +19,24 @@ def test_health():
     assert resp.json().get("status") == "ok"
 
 
+def test_health_live():
+    resp = client.get("/health/live")
+    assert resp.status_code == 200
+    assert resp.json().get("status") == "ok"
+
+
+def test_metrics_endpoint():
+    resp = client.get("/metrics")
+    assert resp.status_code in (200, 503)
+
+
+def test_alerts_webhook():
+    payload = {"receiver": "api-webhook", "status": "firing", "alerts": [{"labels": {"alertname": "Test"}}]}
+    resp = client.post("/alerts", json=payload)
+    assert resp.status_code == 200
+    assert resp.json().get("status") == "ok"
+
+
 def test_baseline_predict():
     payload = {
         "model_name": "baseline",

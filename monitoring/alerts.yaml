@@ -1,0 +1,37 @@
+groups:
+  - name: ts-forecast-alerts
+    rules:
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total[5m])) > 0.02
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High 5xx error rate"
+          description: "Error rate > 2% for 5 minutes."
+
+      - alert: HighLatencyP95
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High request latency (p95)"
+          description: "p95 latency > 2s for 5 minutes."
+
+      - alert: TaskFailuresSpike
+        expr: |
+          sum(rate(task_failures_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Task failures detected"
+          description: "Training task failures observed in the last 5 minutes."
