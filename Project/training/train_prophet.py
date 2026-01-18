@@ -23,6 +23,12 @@ def _save_model(model, path: str) -> None:
         pickle.dump(model, f)
 
 def train_prophet_model(df, config):
+    default_cfg = config.get("default", {}) if isinstance(config, dict) else {}
+    time_col = config.get("time_col", default_cfg.get("time_col", "date"))
+    value_col = config.get("value_col", default_cfg.get("value_col", "value"))
+
+    df = df.loc[:, [time_col, value_col]].copy()
+
     # 数据有效性检查
     if df.isnull().any().any():
         raise ValueError("❌ 输入数据包含缺失值，请先进行清洗处理。")
@@ -42,8 +48,6 @@ def train_prophet_model(df, config):
         pass
 
     # Ensure Prophet-compatible column names
-    time_col = config.get("time_col", "date")
-    value_col = config.get("value_col", "value")
     df = df.rename(columns={
         time_col: "ds",
         value_col: "y"

@@ -66,6 +66,27 @@ def compute_rmse(y_true, y_pred):
     return float(np.sqrt(np.mean(diff * diff)))
 
 
+def compute_mae(y_true, y_pred) -> float:
+    """
+    Compute MAE between y_true and y_pred.
+    """
+    y_true = to_numpy_safe_force_float(y_true)
+    y_pred = to_numpy_safe_force_float(y_pred)
+    y_true, y_pred = unify_length_and_flatten(y_true, y_pred)
+    diff = (y_true - y_pred).astype(float)
+    return float(np.mean(np.abs(diff)))
+
+
+def compute_smape(y_true, y_pred, eps: float = 1e-8) -> float:
+    """
+    Symmetric MAPE: 2*|y-yp|/(|y|+|yp|).
+    """
+    y_true = to_numpy_safe_force_float(y_true)
+    y_pred = to_numpy_safe_force_float(y_pred)
+    y_true, y_pred = unify_length_and_flatten(y_true, y_pred)
+    denom = np.maximum(np.abs(y_true) + np.abs(y_pred), eps)
+    return float(np.mean(2.0 * np.abs(y_true - y_pred) / denom))
+
 def compute_mape(y_true, y_pred, eps: float = 1e-8, masked: bool = True) -> float:
     yt = np.asarray(y_true, dtype=np.float64).reshape(-1)
     yp = np.asarray(y_pred, dtype=np.float64).reshape(-1)

@@ -23,6 +23,29 @@ def baseline_predict(df: pd.DataFrame, value_col: str, horizon: int) -> np.ndarr
     return np.array([last for _ in range(horizon)], dtype=float)
 
 
+def seasonal_naive_predict(
+    df: pd.DataFrame,
+    value_col: str,
+    horizon: int,
+    season_len: int,
+) -> np.ndarray:
+    """
+    Seasonal naive baseline: repeat values from one season ago.
+    """
+    if season_len <= 0:
+        return baseline_predict(df, value_col, horizon)
+    if value_col not in df.columns:
+        raise KeyError(f"Missing target column '{value_col}' in rows.")
+    y = pd.to_numeric(df[value_col], errors="coerce").dropna().to_numpy(dtype=float)
+    if len(y) < season_len:
+        return baseline_predict(df, value_col, horizon)
+    base = y[-season_len:]
+    if len(base) >= horizon:
+        return np.array(base[:horizon], dtype=float)
+    pad = np.resize(base, horizon)
+    return np.array(pad, dtype=float)
+
+
 def predict_with_xgboost(
     df: pd.DataFrame,
     *,

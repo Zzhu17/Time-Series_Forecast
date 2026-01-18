@@ -105,3 +105,9 @@ def train_lstm_model_7tuple(df: pd.DataFrame, config: dict):
     # 4) 直接调用新 LSTM 训练（单次即可获得 val/test 结果）
     cfg_for_train = _build_subconfig_for_train(config, time_col, value_col, hparams)
     return train_lstm_model(df, cfg_for_train)
+
+
+def get_forecaster():
+    from models.base import TrainFunctionForecaster
+
+    return TrainFunctionForecaster("lstm", train_lstm_model_7tuple)

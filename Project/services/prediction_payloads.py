@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from schemas.api import PredictRequest
 from services.contract_utils import (
+    apply_hybrid_preset,
     build_feature_contract_report,
     coerce_rows,
     normalize_feature_cols,
@@ -24,6 +25,10 @@ def normalize_prediction_payload(
         raise ValueError("payload must be a dict")
     raw = dict(payload)
     raw["model_name"] = normalize_model_name(raw.get("model_name"))
+    raw["model_name"], raw["residual_modeling"], model_alias = apply_hybrid_preset(
+        raw["model_name"],
+        raw.get("residual_modeling") if isinstance(raw.get("residual_modeling"), dict) else None,
+    )
     raw["rows"] = coerce_rows(raw.get("rows"))
     try:
         parsed = PredictRequest(**raw)
@@ -56,4 +61,6 @@ def normalize_prediction_payload(
     normalized["rows"] = raw["rows"]
     if contract_report:
         normalized["contract_report"] = contract_report
+    if model_alias:
+        normalized["model_alias"] = model_alias
     return df, normalized, contract_report

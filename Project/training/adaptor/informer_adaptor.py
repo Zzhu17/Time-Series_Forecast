@@ -79,3 +79,9 @@ def train_informer_model_7tuple(df, config):
         final_model, test_forecast_df,
         best_params
     )
+
+
+def get_forecaster():
+    from models.base import TrainFunctionForecaster
+
+    return TrainFunctionForecaster("informer", train_informer_model_7tuple)

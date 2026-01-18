@@ -8,11 +8,13 @@ from sklearn.metrics import mean_absolute_error
 from utils.array_utils import clean_and_unify_arrays
 
 # Optional dependency: pmdarima. Fallback to a naive predictor if missing.
+_ARIMA_IMPORT_ERROR = None
 try:
     from models.arima import build_arima_model  # type: ignore
     _ARIMA_AVAILABLE = True
 except Exception as _e:
     _ARIMA_AVAILABLE = False
+    _ARIMA_IMPORT_ERROR = _e
 
     class _NaiveArima:
         def __init__(self, y_train):
@@ -23,7 +25,7 @@ except Exception as _e:
             return np.array([last for _ in range(int(n_periods))], dtype=float)
 
     def build_arima_model(y_train, config):
-        print(f"[ARIMA] pmdarima not available; using naive baseline. Error: {_e}")
+        print(f"[ARIMA] pmdarima not available; using naive baseline. Error: {_ARIMA_IMPORT_ERROR}")
         return _NaiveArima(y_train)
 
 # 统一度量：使用全局 metrics.rmse（避免各处口径不一致）

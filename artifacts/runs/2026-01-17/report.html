@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Forecast Report</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 24px; background: #faf7f2; color: #222; }
+    h1 { margin-bottom: 6px; }
+    pre { background: #fff; padding: 12px; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Forecast Report</h1>
+  <p><strong>Model:</strong> baseline</p>
+  <p><strong>Dataset ID:</strong> 5ee5bd757e031be6</p>
+  <p><strong>Leaderboard:</strong> artifacts/runs/2026-01-17/leaderboard.csv</p>
+  <h2>Summary</h2>
+  <pre>{
+  "model": "baseline",
+  "dataset_id": "5ee5bd757e031be6",
+  "metrics": {
+    "validation": {
+      "rmse": 2.2524009553612405,
+      "mape": 0.014317694848162645,
+      "mae": 1.7801956826067986,
+      "smape": 0.01430960264548861
+    },
+    "test": {
+      "rmse": 34.993957928936815,
+      "mape": 0.25357295121639234,
+      "mae": 34.07899878058635,
+      "smape": 0.29182598070819016
+    },
+    "baseline": {
+      "naive": {
+        "val": {
+          "rmse": 3.476671370733953,
+          "mape": 0.02355959353141376,
+          "mae": 2.9603194604351954,
+          "smape": 0.0239258062435411
+        },
+        "test": {
+          "rmse": 13.275611986739253,
+          "mape": 0.0768995553587679,
+          "mae": 10.655194410486748,
+          "smape": 0.08160498021959096
+        }
+      },
+      "seasonal": {},
+      "season_len": null
+    },
+    "drift": {
+      "drifted": true,
+      "mean_shift": 15.130076578639041,
+      "std_ratio": 3.5294673977113926,
+      "score": 17.659543976350434
+    }
+  },
+  "baseline_metrics": {
+    "naive": {
+      "val": {
+        "rmse": 3.476671370733953,
+        "mape": 0.02355959353141376,
+        "mae": 2.9603194604351954,
+        "smape": 0.0239258062435411
+      },
+      "test": {
+        "rmse": 13.275611986739253,
+        "mape": 0.0768995553587679,
+        "mae": 10.655194410486748,
+        "smape": 0.08160498021959096
+      }
+    },
+    "seasonal": {},
+    "season_len": null
+  },
+  "drift": {
+    "drifted": true,
+    "mean_shift": 15.130076578639041,
+    "std_ratio": 3.5294673977113926,
+    "score": 17.659543976350434
+  },
+  "leaderboard": "artifacts/runs/2026-01-17/leaderboard.csv",
+  "artifacts": {
+    "model_path": "/Users/zipengzhu/Desktop/Time-Series_Forecast/artifacts/runs/2026-01-17/model.bin",
+    "scaler_path": "/Users/zipengzhu/Desktop/Time-Series_Forecast/artifacts/runs/2026-01-17/scaler.pkl",
+    "residual_model_path": "/Users/zipengzhu/Desktop/Time-Series_Forecast/artifacts/runs/2026-01-17/residual_model.pkl",
+    "y_scaler_path": "/Users/zipengzhu/Desktop/Time-Series_Forecast/artifacts/runs/2026-01-17/value_scaler.pkl",
+    "feature_cols_path": "/Users/zipengzhu/Desktop/Time-Series_Forecast/artifacts/runs/2026-01-17/feature_cols.json",
+    "feature_report_path": "/Users/zipengzhu/Desktop/Time-Series_Forecast/artifacts/runs/2026-01-17/feature_report.json",
+    "processed_data_path": "/Users/zipengzhu/Desktop/Time-Series_Forecast/Project/Data/processed/processed.parquet",
+    "data_profile_path": "/Users/zipengzhu/Desktop/Time-Series_Forecast/Project/Data/processed/data_profile.json",
+    "run_processed_data_path": "/Users/zipengzhu/Desktop/Time-Series_Forecast/artifacts/runs/2026-01-17/processed.parquet",
+    "run_data_profile_path": "/Users/zipengzhu/Desktop/Time-Series_Forecast/artifacts/runs/2026-01-17/data_profile.json",
+    "dataset_id": "5ee5bd757e031be6",
+    "run_id": "2026-01-17",
+    "run_dir": "/Users/zipengzhu/Desktop/Time-Series_Forecast/artifacts/runs/2026-01-17",
+    "feature_cols": [
+      "value",
+      "month",
+      "day_of_month",
+      "day_of_week",
+      "rolling_mean_6",
+      "rolling_std_24",
+      "rolling_std_12"
+    ]
+  }
+}</pre>
+</body>
+</html>

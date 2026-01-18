@@ -41,3 +41,9 @@ def train_prophet_model_7tuple(df, config):
 
     return (val_true, val_forecast, test_true, test_forecast,
             final_model, test_forecast_df, best_params)
+
+
+def get_forecaster():
+    from models.base import TrainFunctionForecaster
+
+    return TrainFunctionForecaster("prophet", train_prophet_model_7tuple)

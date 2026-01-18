@@ -26,6 +26,14 @@ thresholds:
 metrics:
   robust_rmse: false        # 若想减少离群点影响，可改为 true（需在代码侧支持）
 
+evaluation:
+  backtest:
+    enabled: false
+    horizon: 1
+    step: 1
+    window: 24
+    seasonal_period: 0
+
 # 调参设置
 optimization:
   n_trials: 50
@@ -110,6 +118,22 @@ model_config:
     batch_size: 64
     n_epochs: 20
     learning_rate: 0.001  
+
+  ARIMA:
+    mode: fixed
+    use_seasonal: false
+    max_p: 2
+    max_d: 1
+    max_q: 2
+    fixed_order: [1, 1, 1]
+    rolling:
+      enabled: false
+      refit_every: 12
+      forecast_h: 1
+      use_refit_on_exception: true
+      max_eval_points: 500
+    train:
+      max_train_rows: 200
     weight_decay: 0.0001 
   XGBoost:
     # Train-only selection + strict missing policy are handled by the unified pipeline.
@@ -133,40 +157,6 @@ model_config:
     changepoint_prior_scale: 0.05
     seq_len: 90
     pred_len: 30
-
-  ARIMA:
-    mode: smart
-    boxcox: true
-    use_seasonal: true
-    seasonal_period: 7
-    max_p: 8
-    max_d: 2
-    max_q: 8
-    max_P: 4
-    max_D: 1
-    max_Q: 4
-    stepwise: false
-    seasonal_test: ocsb
-    enforce_stationarity: false
-    enforce_invertibility: false
-
-    rolling:
-      forecast_h: 1
-      refit_every: 3
-      use_refit_on_exception: true
-
-    # === 训练/切分（若不走全局 6:2:2，这里兜底）===
-    train:
-      val_ratio: 0.2             # 训练集之后留 20% 做验证
-      test_ratio: 0.2            # 再从剩余里留 20% 做测试
-
-    # === 诊断输出 ===
-    diagnostics:
-      ljungbox_alpha: 0.05
-      save_plots: false          # 如需保存 ACF/PACF/QQ 图，改为 true
-      plot_path: "artifacts/arima_diagnostics"
-
-
 
   RandomForest:
     # RF 默认参数；若启用 Optuna 调参，这些仅作为初始值参考
@@ -209,12 +199,32 @@ prediction:
     enabled: false                   # 预测端降级模式：当 Required Core 缺失/特征不匹配时切换到基线并标记 degraded=True
     mode: naive_last                 # 目前实现：naive_last（持久性预测）
 
+# Baseline settings
+baseline:
+  season_len: 0
+
 # 通用模型配置参数，包括阈值设定与模型默认结构
 
 logging:
   level: DEBUG
   save_log: true
   log_path: logs/app.log
+
+# Data preprocessing defaults
+data_prep:
+  missing:
+    strategy: drop   # drop | fill
+    fill_value: 0
+    fill_method: ""  # ffill | bfill | ""
+  resample:
+    enabled: false
+    freq: D
+    agg: mean
+  outlier:
+    enabled: true
+    lower_q: 0.01
+    upper_q: 0.99
+    columns: []
 
 artifacts:
   model_path: artifacts/informer_model.pth

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 from typing import Any, Dict, List, Optional
 
 from services import registry
@@ -24,16 +25,77 @@ def _validate_name(name: str) -> str:
     return cleaned
 
 
+def _module_available(module: str) -> bool:
+    return importlib.util.find_spec(module) is not None
+
+
+def _check_deps(deps: List[str]) -> tuple[bool, List[str]]:
+    missing = [dep for dep in deps if dep and not _module_available(dep)]
+    return (len(missing) == 0), missing
+
+
 def list_model_catalog() -> List[Dict[str, str]]:
-    return [
-        {"name": "baseline", "description": "Naive last-value persistence."},
-        {"name": "informer", "description": "Heavy model; requires artifacts (not loaded by default)."},
-        {"name": "lstm", "description": "Heavy model; requires artifacts (not loaded by default)."},
-        {"name": "xgboost", "description": "Requires trained artifacts."},
-        {"name": "randomforest", "description": "Requires trained artifacts."},
-        {"name": "arima", "description": "Requires trained artifacts."},
-        {"name": "prophet", "description": "Requires trained artifacts."},
+    catalog = [
+        {
+            "name": "baseline",
+            "description": "Naive last-value persistence.",
+            "deps": [],
+        },
+        {
+            "name": "informer",
+            "description": "Transformer forecaster (requires torch).",
+            "deps": ["torch"],
+        },
+        {
+            "name": "lstm",
+            "description": "LSTM forecaster (requires torch).",
+            "deps": ["torch"],
+        },
+        {
+            "name": "xgboost",
+            "description": "Gradient boosting regressor (requires xgboost).",
+            "deps": ["xgboost"],
+        },
+        {
+            "name": "randomforest",
+            "description": "Random forest regressor (requires scikit-learn).",
+            "deps": ["sklearn"],
+        },
+        {
+            "name": "arima",
+            "description": "Auto ARIMA (requires pmdarima).",
+            "deps": ["pmdarima"],
+        },
+        {
+            "name": "prophet",
+            "description": "Prophet forecaster (requires prophet).",
+            "deps": ["prophet"],
+        },
+        {
+            "name": "xgboost+informer",
+            "description": "Informer forecast + XGBoost residual correction.",
+            "deps": ["torch", "xgboost"],
+        },
+        {
+            "name": "xgboost+lstm",
+            "description": "LSTM forecast + XGBoost residual correction.",
+            "deps": ["torch", "xgboost"],
+        },
     ]
+
+    out: List[Dict[str, str]] = []
+    for item in catalog:
+        deps = item.get("deps") or []
+        available, missing = _check_deps(deps)
+        out.append(
+            {
+                "name": item["name"],
+                "description": item["description"],
+                "available": available,
+                "missing_deps": missing or None,
+            }
+        )
+    return out
 
 
 def register_model_entry(

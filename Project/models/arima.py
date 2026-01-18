@@ -1,6 +1,6 @@
 from typing import Any
 import numpy as np
-from pmdarima import auto_arima
+from pmdarima import ARIMA, auto_arima
 from pmdarima.arima.utils import ndiffs, nsdiffs
 
 
@@ -24,6 +24,8 @@ def _get_arima_cfg(config: dict) -> dict:
   seasonal_test = str(mcfg.get("seasonal_test", "ocsb"))
   enforce_stationarity = bool(mcfg.get("enforce_stationarity", True))
   enforce_invertibility = bool(mcfg.get("enforce_invertibility", True))
+  fixed_order = mcfg.get("fixed_order")
+  fixed_seasonal_order = mcfg.get("fixed_seasonal_order")
   return {
       "use_seasonal": use_seasonal,
       "seasonal_period": seasonal_period,
@@ -33,6 +35,8 @@ def _get_arima_cfg(config: dict) -> dict:
       "seasonal_test": seasonal_test,
       "enforce_stationarity": enforce_stationarity,
       "enforce_invertibility": enforce_invertibility,
+      "fixed_order": fixed_order,
+      "fixed_seasonal_order": fixed_seasonal_order,
   }
 
 
@@ -66,8 +70,29 @@ def build_arima_model(y_train: Any, config: dict) -> Any:
 
   # 模式开关：plain -> 直接使用朴素 auto_arima；smart -> 使用增强版（默认）
   mcfg = (config.get("model_config") or {}).get("ARIMA", {}) or {}
+  fixed_order = c.get("fixed_order")
+  fixed_seasonal_order = c.get("fixed_seasonal_order")
   if str(mcfg.get("mode", "smart")).lower() == "plain":
       return build_auto_arima(y_train)
+
+  if fixed_order:
+      def _parse_order(raw, length):
+          if isinstance(raw, (list, tuple)) and len(raw) >= length:
+              return tuple(int(x) for x in raw[:length])
+          if isinstance(raw, str):
+              parts = [p.strip() for p in raw.split(",")]
+              if len(parts) >= length and all(p.lstrip("-").isdigit() for p in parts[:length]):
+                  return tuple(int(p) for p in parts[:length])
+          raise ValueError(f"Invalid fixed_order: {raw}")
+
+      order = _parse_order(fixed_order, 3)
+      if fixed_seasonal_order:
+          seasonal_order = _parse_order(fixed_seasonal_order, 4)
+      else:
+          seasonal_order = (0, 0, 0, 0)
+      model = ARIMA(order=order, seasonal_order=seasonal_order, suppress_warnings=True)
+      model.fit(np.asarray(y_train, dtype=float).ravel())
+      return model
 
   y_train = np.asarray(y_train, dtype=float).ravel()
   n = int(y_train.size)

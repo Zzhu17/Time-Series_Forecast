@@ -49,4 +49,14 @@ TRAINER_REGISTRY = {
     "xgboost": _lazy("training.adaptor.xgboost_adaptor", "train_xgboost_model_7tuple", install_hint="pip install xgboost"),
 }
 
-__all__ = ("MODEL_REGISTRY", "TRAINER_REGISTRY")
+FORECASTER_REGISTRY = {
+    "baseline": _lazy("models.base", "BaselineForecaster"),
+    "informer": _lazy("training.adaptor.informer_adaptor", "get_forecaster", install_hint="pip install torch scikit-learn joblib pyyaml"),
+    "prophet": _lazy("training.adaptor.Prophet_adaptor", "get_forecaster", install_hint="pip install prophet scikit-learn"),
+    "arima": _lazy("training.adaptor.arima_adaptor", "get_forecaster", install_hint="pip install pmdarima scikit-learn"),
+    "randomforest": _lazy("training.train_random_forest", "get_forecaster", install_hint="pip install scikit-learn optuna"),
+    "lstm": _lazy("training.adaptor.LSTM_adaptor", "get_forecaster", install_hint="pip install torch scikit-learn joblib"),
+    "xgboost": _lazy("training.adaptor.xgboost_adaptor", "get_forecaster", install_hint="pip install xgboost"),
+}
+
+__all__ = ("MODEL_REGISTRY", "TRAINER_REGISTRY", "FORECASTER_REGISTRY")

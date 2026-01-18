@@ -123,3 +123,9 @@ def train_random_forest_model(df: pd.DataFrame, config):
 
     final_model = model
     return val_true, val_forecast, test_true, test_forecast, final_model, test_forecast_df, best_params
+
+
+def get_forecaster():
+    from models.base import TrainFunctionForecaster
+
+    return TrainFunctionForecaster("randomforest", train_random_forest_model)

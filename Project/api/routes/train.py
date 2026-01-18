@@ -11,7 +11,7 @@ from services.request_utils import (
     clean_dataframe_for_json,
     parse_feature_cols,
     parse_residual_modeling,
-    read_csv_upload,
+    read_tabular_upload,
 )
 from services.training_payloads import prepare_training_payload
 from services.train_service import run_training_task
@@ -74,7 +74,7 @@ async def train_from_file(
     """
     Accept a CSV upload and create a training task. feature_cols/residual_modeling are JSON strings or comma lists.
     """
-    df = read_csv_upload(file)
+    df = read_tabular_upload(file)
     df = clean_dataframe_for_json(df)
 
     fc_list = parse_feature_cols(feature_cols)
@@ -116,7 +116,7 @@ async def train_file_sync(
     - Auto-selects numeric feature columns (filters missing/correlation) when feature_cols not provided
     - Runs pipeline and returns metrics + plot_data
     """
-    df = read_csv_upload(file)
+    df = read_tabular_upload(file)
     df = clean_dataframe_for_json(df)
 
     fc_list = parse_feature_cols(feature_cols)
@@ -146,6 +146,7 @@ async def train_file_sync(
         payload_out = {}
     payload_out["feature_cols"] = fc_list
     payload_out["task_model"] = model_name
+    payload_out["run_id"] = task_id
     payload_out["model_record"] = result.get("model_record") if isinstance(result, dict) else None
     return payload_out
 
@@ -166,7 +167,7 @@ async def train_file_streamlit(
     Streamlit-like sync endpoint: builds the same config as app.py, runs pipeline, and returns cacheable_results
     (metrics + plot_data + degraded flags) for frontend rendering.
     """
-    df = read_csv_upload(file)
+    df = read_tabular_upload(file)
     df = clean_dataframe_for_json(df)
 
     fc_list = parse_feature_cols(feature_cols)
@@ -196,5 +197,6 @@ async def train_file_streamlit(
         payload_out = {}
     payload_out["feature_cols"] = fc_list
     payload_out["task_model"] = model_name
+    payload_out["run_id"] = task_id
     payload_out["model_record"] = result.get("model_record") if isinstance(result, dict) else None
     return payload_out

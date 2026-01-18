@@ -3,11 +3,13 @@ from __future__ import annotations
 import pandas as pd
 from typing import Dict, Any, Tuple, List, Optional
 import os
+from pathlib import Path
 import numpy as np
 import random
 
 from utils.schemas import PipelineRunModel
 from utils.feature_pipeline import save_feature_contract_if_any
+from evaluation.metrics import compute_mape
 
 # ---------- 连续序列拼接：供 plot.py 连续分支直接使用 ----------
 def build_continuous_series(train_df_plot, val_dense, test_dense, time_col=None):
@@ -133,7 +135,7 @@ def configure_logging(cfg):
     logging.getLogger().setLevel(lvl)
 
 
-from models.registry import TRAINER_REGISTRY
+from models.registry import TRAINER_REGISTRY, FORECASTER_REGISTRY
 
 # NOTE: keep imports minimal at module import time.
 # Heavy/optional deps (sklearn/torch/pmdarima/prophet/...) are loaded lazily in trainers.
@@ -335,14 +337,64 @@ def run_train_predict_pipeline(config):
             except Exception:
                 pass
 
+    def _basic_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
+        yt = np.asarray(y_true, dtype=float).reshape(-1)
+        yp = np.asarray(y_pred, dtype=float).reshape(-1)
+        n = min(len(yt), len(yp))
+        yt = yt[:n]
+        yp = yp[:n]
+        if n == 0:
+            return {"rmse": np.nan, "mape": np.nan, "mae": np.nan, "smape": np.nan}
+        diff = yp - yt
+        rmse = float(np.sqrt(np.mean(diff * diff)))
+        mae = float(np.mean(np.abs(diff)))
+        denom = np.maximum(np.abs(yt), 1e-8)
+        mape = float(np.mean(np.abs(diff) / denom))
+        denom2 = np.maximum(np.abs(yt) + np.abs(yp), 1e-8)
+        smape = float(np.mean(2.0 * np.abs(diff) / denom2))
+        return {"rmse": rmse, "mape": mape, "mae": mae, "smape": smape}
+
+    def _baseline_metrics(y_all: np.ndarray, train_len: int, val_len: int, test_len: int) -> dict:
+        y_all = np.asarray(y_all, dtype=float).reshape(-1)
+        out = {"naive": {}, "seasonal": {}, "season_len": None}
+        if train_len <= 0 or len(y_all) < train_len:
+            return out
+        last_train = y_all[train_len - 1]
+        if val_len > 0:
+            y_val = y_all[train_len : train_len + val_len]
+            out["naive"]["val"] = _basic_metrics(y_val, np.full(val_len, last_train, dtype=float))
+        if test_len > 0:
+            y_test = y_all[train_len + val_len : train_len + val_len + test_len]
+            last_tv = y_all[train_len + val_len - 1] if train_len + val_len > 0 else last_train
+            out["naive"]["test"] = _basic_metrics(y_test, np.full(test_len, last_tv, dtype=float))
+
+        season_len = int((config.get("baseline") or {}).get("season_len", 0) or 0)
+        if season_len <= 0:
+            # Try infer from data frequency (hourly/daily)
+            season_len = int((config.get("prediction", {}) or {}).get("season_len", 0) or 0)
+        if season_len > 0 and train_len >= season_len:
+            out["season_len"] = season_len
+            if val_len > 0:
+                y_val = y_all[train_len : train_len + val_len]
+                seasonal_val = y_all[train_len - season_len : train_len - season_len + val_len]
+                out["seasonal"]["val"] = _basic_metrics(y_val, seasonal_val)
+            if test_len > 0:
+                y_test = y_all[train_len + val_len : train_len + val_len + test_len]
+                test_start = train_len + val_len - season_len
+                seasonal_test = y_all[test_start : test_start + test_len] if test_start >= 0 else None
+                if seasonal_test is not None and len(seasonal_test) == len(y_test):
+                    out["seasonal"]["test"] = _basic_metrics(y_test, seasonal_test)
+        return out
+
     _progress(0.03, f"pipeline start (model={model_key})")
 
     # ===========================================================
     # 0) 优先通过 TRAINER_REGISTRY（例如 arima）
     # ===========================================================
-    if model_key in TRAINER_REGISTRY:
+    if model_key in TRAINER_REGISTRY or model_key in FORECASTER_REGISTRY:
         _progress(0.08, "trainer dispatch")
-        runner = TRAINER_REGISTRY[model_key]
+        runner = TRAINER_REGISTRY.get(model_key)
+        forecaster_factory = FORECASTER_REGISTRY.get(model_key)
         _df_candidates = [
             config.get('dataframe'),
             data_blk.get('dataframe'),
@@ -356,6 +408,35 @@ def run_train_predict_pipeline(config):
                 data_blk.setdefault("dataframe", _df_input)
         except Exception:
             pass
+
+        # Data preprocessing + versioning (cleaning, feature engineering, profiling).
+        try:
+            from services.data_versioning import preprocess_dataframe, save_processed_assets
+
+            _df_input, profile = preprocess_dataframe(
+                _df_input,
+                config=config,
+                time_col=time_col,
+                value_col=value_col,
+            )
+            data_blk["dataframe"] = _df_input
+            data_blk["df"] = _df_input
+            run_dir = str(artifacts.get("run_dir") or artifacts.get("artifact_dir") or "")
+            if not run_dir:
+                model_path = artifacts.get("model_path")
+                if isinstance(model_path, str) and model_path:
+                    run_dir = os.path.dirname(model_path)
+            if not run_dir:
+                run_dir = str(Path(__file__).resolve().parents[1] / "artifacts")
+            assets = save_processed_assets(
+                _df_input,
+                profile=profile,
+                artifacts_dir=run_dir or "artifacts",
+            )
+            artifacts.update(assets)
+            data_blk["data_profile"] = profile
+        except Exception as _e:
+            data_blk["data_profile_error"] = str(_e)
 
         # Unified feature cleaning for non-Informer models to avoid NaN-heavy feature issues.
         if model_key != "informer":
@@ -400,7 +481,20 @@ def run_train_predict_pipeline(config):
                 raise
 
         _progress(0.12, "training + predict")
-        val_true, val_pred, test_true, test_pred, final_model, test_df, params = runner(_df_input, config)
+        if forecaster_factory is not None:
+            forecaster = forecaster_factory()
+            fit = forecaster.fit(_df_input, config)
+            val_true = fit.val_true
+            val_pred = fit.val_pred
+            test_true = fit.test_true
+            test_pred = fit.test_pred
+            final_model = fit.model
+            test_df = fit.test_forecast_df
+            params = fit.params
+        elif runner is not None:
+            val_true, val_pred, test_true, test_pred, final_model, test_df, params = runner(_df_input, config)
+        else:
+            raise ValueError(f"Unsupported model '{model_key}'")
         _progress(0.80, "postprocess predictions")
         artifacts[f"{model_key}_params"] = params
         # Ensure RF best params are exposed under a stable key for the app panel
@@ -694,6 +788,7 @@ def run_train_predict_pipeline(config):
             except Exception:
                 diff = np.subtract(np.asarray(dfm["yhat"].values, dtype="float64"), np.asarray(dfm["y_true"].values, dtype="float64"))
                 rmse_val = float(np.sqrt(np.mean(diff * diff)))
+            mae_val = float(np.mean(np.abs(diff)))
             try:
                 y = np.asarray(dfm["y_true"].values, dtype="float64").reshape(-1)
                 yhat = np.asarray(dfm["yhat"].values, dtype="float64").reshape(-1)
@@ -704,17 +799,71 @@ def run_train_predict_pipeline(config):
                 yhat = np.asarray(dfm["yhat"].values, dtype="float64")
                 denom = np.where(np.abs(y) > 1e-12, np.abs(y), np.nan)
                 mape_val = float(np.nanmean(np.abs(yhat - y) / denom))
-            return {"rmse": rmse_val, "mape": mape_val}
+            denom2 = np.maximum(np.abs(y) + np.abs(yhat), 1e-8)
+            smape_val = float(np.mean(2.0 * np.abs(yhat - y) / denom2))
+            return {"rmse": rmse_val, "mape": mape_val, "mae": mae_val, "smape": smape_val}
 
         val_metrics  = _compute_metrics_from_dense(val_dense_std)
         test_metrics = _compute_metrics_from_dense(test_dense_std)
         metrics_blk = config.setdefault("metrics", {})
         if isinstance(val_metrics, dict):
             metrics_blk["val_rmse"] = val_metrics.get("rmse"); metrics_blk["val_mape"] = val_metrics.get("mape")
+            metrics_blk["val_mae"] = val_metrics.get("mae"); metrics_blk["val_smape"] = val_metrics.get("smape")
         if isinstance(test_metrics, dict):
             metrics_blk["test_rmse"] = test_metrics.get("rmse"); metrics_blk["test_mape"] = test_metrics.get("mape")
+            metrics_blk["test_mae"] = test_metrics.get("mae"); metrics_blk["test_smape"] = test_metrics.get("smape")
         data_blk["val_metrics"]  = val_metrics
         data_blk["test_metrics"] = test_metrics
+
+        # Baseline metrics (naive / seasonal)
+        try:
+            y_all = pd.to_numeric(_df_input[value_col], errors="coerce").to_numpy(dtype=float)
+            n_total = int(len(y_all))
+            v_len = int(len(np.asarray(val_true).ravel())) if val_true is not None else 0
+            te_len = int(len(np.asarray(test_true).ravel())) if test_true is not None else 0
+            t_len = max(0, n_total - v_len - te_len)
+            base_metrics = _baseline_metrics(y_all, t_len, v_len, te_len)
+            data_blk["baseline_metrics"] = base_metrics
+            metrics_blk["baseline"] = base_metrics
+        except Exception:
+            pass
+
+        try:
+            from evaluation.drift import compute_residual_drift
+
+            drift = compute_residual_drift(
+                val_true=np.asarray(val_true),
+                val_pred=np.asarray(val_pred),
+                test_true=np.asarray(test_true),
+                test_pred=np.asarray(test_pred),
+            )
+            data_blk["drift"] = drift
+            metrics_blk["drift"] = drift
+        except Exception:
+            pass
+
+        # Optional rolling backtest (naive/seasonal naive)
+        try:
+            bt_cfg = (config.get("evaluation") or {}).get("backtest") or {}
+            if bool(bt_cfg.get("enabled", False)):
+                from evaluation.backtest import rolling_backtest_naive
+
+                series = pd.to_numeric(_df_input[value_col], errors="coerce")
+                bt = rolling_backtest_naive(
+                    series,
+                    horizon=int(bt_cfg.get("horizon", 1)),
+                    step=int(bt_cfg.get("step", 1)),
+                    window=int(bt_cfg.get("window", 24)),
+                    seasonal_period=int(bt_cfg.get("seasonal_period", 0)) or None,
+                )
+                data_blk["backtest"] = bt
+                if bt.get("y_true") and bt.get("y_pred"):
+                    data_blk["backtest_metrics"] = _basic_metrics(
+                        np.asarray(bt.get("y_true")),
+                        np.asarray(bt.get("y_pred")),
+                    )
+        except Exception:
+            pass
 
         # 反归一化训练真值
         train_true = None
@@ -818,6 +967,7 @@ def run_train_predict_pipeline(config):
         except Exception:
             diff = np.subtract(np.asarray(dfm["yhat"].values, dtype="float64"), np.asarray(dfm["y_true"].values, dtype="float64"))
             rmse_val = float(np.sqrt(np.mean(diff * diff)))
+        mae_val = float(np.mean(np.abs(diff)))
         try:
             mape_val = float(compute_mape(dfm["y_true"].values, dfm["yhat"].values))
         except Exception:
@@ -825,17 +975,76 @@ def run_train_predict_pipeline(config):
             yhat = np.asarray(dfm["yhat"].values, dtype="float64")
             denom = np.where(np.abs(y) > 1e-12, np.abs(y), np.nan)
             mape_val = float(np.nanmean(np.abs(yhat - y) / denom))
-        return {"rmse": rmse_val, "mape": mape_val}
+        denom2 = np.maximum(np.abs(y) + np.abs(yhat), 1e-8)
+        smape_val = float(np.mean(2.0 * np.abs(yhat - y) / denom2))
+        return {"rmse": rmse_val, "mape": mape_val, "mae": mae_val, "smape": smape_val}
 
     val_metrics  = _compute_metrics_from_dense(val_dense)
     test_metrics = _compute_metrics_from_dense(test_dense)
     metrics_blk = config.setdefault("metrics", {})
     if isinstance(val_metrics, dict):
         metrics_blk["val_rmse"] = val_metrics.get("rmse"); metrics_blk["val_mape"] = val_metrics.get("mape")
+        metrics_blk["val_mae"] = val_metrics.get("mae"); metrics_blk["val_smape"] = val_metrics.get("smape")
     if isinstance(test_metrics, dict):
         metrics_blk["test_rmse"] = test_metrics.get("rmse"); metrics_blk["test_mape"] = test_metrics.get("mape")
+        metrics_blk["test_mae"] = test_metrics.get("mae"); metrics_blk["test_smape"] = test_metrics.get("smape")
     data_blk["val_metrics"]  = val_metrics
     data_blk["test_metrics"] = test_metrics
+
+    try:
+        if isinstance(data_blk.get("dataframe"), pd.DataFrame):
+            y_all = pd.to_numeric(data_blk["dataframe"][value_col], errors="coerce").to_numpy(dtype=float)
+        else:
+            y_all = pd.to_numeric(config.get("dataframe")[value_col], errors="coerce").to_numpy(dtype=float)  # type: ignore[index]
+        n_total = int(len(y_all))
+        v_len = int(len(val_dense)) if isinstance(val_dense, pd.DataFrame) else 0
+        te_len = int(len(test_dense)) if isinstance(test_dense, pd.DataFrame) else 0
+        t_len = max(0, n_total - v_len - te_len)
+        base_metrics = _baseline_metrics(y_all, t_len, v_len, te_len)
+        data_blk["baseline_metrics"] = base_metrics
+        metrics_blk["baseline"] = base_metrics
+    except Exception:
+        pass
+
+    try:
+        from evaluation.drift import compute_residual_drift
+
+        if isinstance(val_dense, pd.DataFrame) and isinstance(test_dense, pd.DataFrame):
+            drift = compute_residual_drift(
+                val_true=val_dense["y_true"].values,
+                val_pred=val_dense["yhat"].values,
+                test_true=test_dense["y_true"].values,
+                test_pred=test_dense["yhat"].values,
+            )
+            data_blk["drift"] = drift
+            metrics_blk["drift"] = drift
+    except Exception:
+        pass
+
+    try:
+        bt_cfg = (config.get("evaluation") or {}).get("backtest") or {}
+        if bool(bt_cfg.get("enabled", False)):
+            from evaluation.backtest import rolling_backtest_naive
+
+            if isinstance(data_blk.get("dataframe"), pd.DataFrame):
+                series = pd.to_numeric(data_blk.get("dataframe")[value_col], errors="coerce")
+            else:
+                series = pd.Series(dtype=float)
+            bt = rolling_backtest_naive(
+                series,
+                horizon=int(bt_cfg.get("horizon", 1)),
+                step=int(bt_cfg.get("step", 1)),
+                window=int(bt_cfg.get("window", 24)),
+                seasonal_period=int(bt_cfg.get("seasonal_period", 0)) or None,
+            )
+            data_blk["backtest"] = bt
+            if bt.get("y_true") and bt.get("y_pred"):
+                data_blk["backtest_metrics"] = _basic_metrics(
+                    np.asarray(bt.get("y_true")),
+                    np.asarray(bt.get("y_pred")),
+                )
+    except Exception:
+        pass
 
     try:
         print(f"[pipeline] metrics -> val: {val_metrics} | test: {test_metrics}")
@@ -975,6 +1184,10 @@ def normalize_results_for_app(res, cfg: dict, src_df: pd.DataFrame) -> dict:
         "test_dense",
         "val_long",
         "test_long",
+        "baseline_metrics",
+        "drift",
+        "backtest",
+        "backtest_metrics",
         "degraded",
         "degraded_mode",
         "degraded_reason",
@@ -1010,6 +1223,10 @@ def normalize_results_for_app(res, cfg: dict, src_df: pd.DataFrame) -> dict:
         tm = _pick_first_dict(data_blk.get("test_metrics"), data_blk.get("metrics_test"), data_blk.get("testing_metrics"))
         if isinstance(tm, dict) and tm:
             out_metrics["test"] = tm
+    if "baseline" not in out_metrics and isinstance(data_blk.get("baseline_metrics"), dict):
+        out_metrics["baseline"] = data_blk.get("baseline_metrics")
+    if "drift" not in out_metrics and isinstance(data_blk.get("drift"), dict):
+        out_metrics["drift"] = data_blk.get("drift")
 
     # root cfg metrics may store flat values
     root_m = cfg.get("metrics") if isinstance(cfg.get("metrics"), dict) else {}
@@ -1195,11 +1412,58 @@ def run_pipeline_and_update_state(
         except Exception:
             pass
 
+        # Leaderboard + report
+        try:
+            from evaluation.report import build_leaderboard, write_leaderboard_csv, write_report_html
+
+            arts = config.get("artifacts") or {}
+            run_dir = str(arts.get("run_dir") or "")
+            if not run_dir:
+                model_path = arts.get("model_path")
+                run_dir = os.path.dirname(model_path) if isinstance(model_path, str) else ""
+            if run_dir:
+                leaderboard_path = Path(run_dir) / "leaderboard.csv"
+                report_path = Path(run_dir) / "report.html"
+
+                metrics = results.get("metrics", {}) if isinstance(results, dict) else {}
+                base_metrics = (config.get("data") or {}).get("baseline_metrics")
+                drift = (config.get("data") or {}).get("drift")
+                display_name = str(config.get("model_alias") or model_name)
+                df_lb = build_leaderboard(
+                    model_name=display_name,
+                    metrics=metrics,
+                    baseline_metrics=base_metrics if isinstance(base_metrics, dict) else {},
+                )
+                write_leaderboard_csv(df_lb, leaderboard_path)
+                write_report_html(
+                    path=report_path,
+                    model_name=display_name,
+                    dataset_id=str(arts.get("dataset_id") or ""),
+                    metrics=metrics,
+                    baseline_metrics=base_metrics if isinstance(base_metrics, dict) else {},
+                    drift=drift if isinstance(drift, dict) else None,
+                    leaderboard_path=str(leaderboard_path),
+                    artifacts=arts if isinstance(arts, dict) else {},
+                )
+
+                results.setdefault("data", {})
+                results["data"]["leaderboard"] = df_lb.to_dict(orient="records")
+                results["data"]["leaderboard_path"] = str(leaderboard_path)
+                results["data"]["report_path"] = str(report_path)
+
+                if isinstance(arts, dict):
+                    arts["leaderboard_path"] = str(leaderboard_path)
+                    arts["report_path"] = str(report_path)
+                    config["artifacts"] = arts
+        except Exception:
+            pass
+
     snap_meta = {
         "uploaded_name": uploaded_name,
         "model_name": model_name,
         "time_col": time_col,
         "value_col": value_col,
+        "run_id": (config.get("artifacts") or {}).get("run_id") or config.get("run_id"),
     }
     snap_results = cacheable_results(results)
 
@@ -1222,6 +1486,7 @@ def run_pipeline_and_update_state(
         mean_abs_true_val = None
         mean_abs_true_test = None
 
+    train_plot = None
     val_plot = None
     test_plot = None
     try:
@@ -1243,6 +1508,15 @@ def run_pipeline_and_update_state(
                 return dfr["timestamp"]
             return pd.date_range(start=pd.Timestamp.today().normalize(), periods=max(1, int(fallback_len)), freq="D")
 
+        if t_len > 0 and value_col in df.columns:
+            try:
+                train_slice = df.iloc[:t_len]
+                train_ts = train_slice[time_col] if time_col in train_slice.columns else None
+                train_true = train_slice[value_col]
+                train_plot = pack_plot_series(train_ts, train_true, train_true, max_n=4000)
+            except Exception:
+                train_plot = None
+
         if isinstance(vd, pd.DataFrame) and {"y_true", "yhat"} <= set(vd.columns):
             val_plot = pack_plot_series(_choose_ts(vd, v_len or len(vd)), vd["y_true"], vd["yhat"], max_n=4000)
         elif isinstance(vlong, dict):
@@ -1257,10 +1531,11 @@ def run_pipeline_and_update_state(
             print(f"[services.pipeline] plot_data build failed: {e}", flush=True)
         except Exception:
             pass
+        train_plot = None
         val_plot = None
         test_plot = None
 
-    if val_plot is None and test_plot is None:
+    if train_plot is None and val_plot is None and test_plot is None:
         try:
             dblk = (config.get("data", {}) or {})
             rdata = (results.get("data", {}) or {})
@@ -1276,7 +1551,7 @@ def run_pipeline_and_update_state(
         except Exception:
             pass
 
-    if val_plot or test_plot:
+    if train_plot or val_plot or test_plot:
         snap_results.setdefault("data", {})
         # Coerce any stringified plot blobs back to dict for safety (avoids cached snapshots with stringified dicts).
         def _coerce_plot(p):
@@ -1291,7 +1566,7 @@ def run_pipeline_and_update_state(
                     return None
             return p
 
-        plot_blob = {"val": _coerce_plot(val_plot), "test": _coerce_plot(test_plot)}
+        plot_blob = {"train": _coerce_plot(train_plot), "val": _coerce_plot(val_plot), "test": _coerce_plot(test_plot)}
         snap_results["data"]["plot_data"] = plot_blob
         try:
             results.setdefault("data", {})

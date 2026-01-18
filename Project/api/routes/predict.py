@@ -9,7 +9,7 @@ from utils.logging_utils import log_json, setup_json_logger
 from schemas.api import PredictRequest, PredictResponse
 from services.predict_service import PredictionNotFoundError, run_prediction
 from services.online_predict_service import run_online_predict
-from services.request_utils import clean_dataframe_for_json, ensure_required_columns, read_csv_upload
+from services.request_utils import clean_dataframe_for_json, ensure_required_columns, read_tabular_upload
 from utils.metrics import observe_predict
 
 LOGGER = setup_json_logger()
@@ -63,7 +63,7 @@ async def predict_online_file(
     model_version: str = Form(""),
 ):
     start_ts = time.time()
-    df = read_csv_upload(file)
+    df = read_tabular_upload(file)
     ensure_required_columns(df, time_col, value_col)
     df = clean_dataframe_for_json(df)
 

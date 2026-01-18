@@ -134,16 +134,24 @@ def render_cached_summary(results: dict, *, model_name: str, time_col: str, valu
     st.markdown("<div class='tsf-card'>", unsafe_allow_html=True)
     st.markdown("### 📈 Forecast (Val/Test)", unsafe_allow_html=True)
     plot_blob = (data_blob.get("plot_data") or {}) if isinstance(data_blob, dict) else {}
+    train_plot = plot_blob.get("train") if isinstance(plot_blob, dict) else None
     val_plot = plot_blob.get("val") if isinstance(plot_blob, dict) else None
     test_plot = plot_blob.get("test") if isinstance(plot_blob, dict) else None
 
-    has_plot_data = isinstance(val_plot, dict) or isinstance(test_plot, dict)
+    has_plot_data = isinstance(train_plot, dict) or isinstance(val_plot, dict) or isinstance(test_plot, dict)
     plot_n_opt = st.selectbox("Points to plot (last N)", ["1000", "2000", "4000", "ALL"], index=1, key="plot_n_cached")
     marker_every = st.number_input("Marker every k points", min_value=20, max_value=2000, value=200, step=20, key="plot_marker_cached")
     if has_plot_data:
         n_points = None if plot_n_opt == "ALL" else int(plot_n_opt)
         if plot_n_opt == "ALL":
             st.warning("Rendering ALL points may be slow for large datasets.")
+        if isinstance(train_plot, dict):
+            render_true_pred(
+                _to_df_plot_blob(train_plot),
+                title="Train: True vs Pred",
+                n_points=n_points,
+                marker_every=int(marker_every),
+            )
         render_val_test(
             _to_df_plot_blob(val_plot),
             _to_df_plot_blob(test_plot),
@@ -158,7 +166,18 @@ def render_cached_summary(results: dict, *, model_name: str, time_col: str, valu
         arts = results.get("artifacts", {}) or {}
         try:
             paths = {}
-            for k in ("model_path", "scaler_path", "residual_model_path", "y_scaler_path", "feature_cols_path", "feature_report_path"):
+            for k in (
+                "model_path",
+                "scaler_path",
+                "residual_model_path",
+                "y_scaler_path",
+                "feature_cols_path",
+                "feature_report_path",
+                "leaderboard_path",
+                "report_path",
+                "processed_data_path",
+                "data_profile_path",
+            ):
                 v = (arts.get(k) if isinstance(arts, dict) else None)
                 if v:
                     paths[k] = str(v)
@@ -167,6 +186,12 @@ def render_cached_summary(results: dict, *, model_name: str, time_col: str, valu
                 st.json(paths)
         except Exception:
             pass
+    if isinstance(data_blob, dict) and data_blob.get("leaderboard"):
+        with st.expander("🏁 Leaderboard", expanded=False):
+            try:
+                st.dataframe(pd.DataFrame(data_blob.get("leaderboard")))
+            except Exception:
+                st.json(data_blob.get("leaderboard"))
     st.markdown("</div>", unsafe_allow_html=True)
 
 

@@ -1,6 +1,6 @@
 # Core app
 streamlit>=1.34.0
-numpy>=1.23.0
+numpy>=1.23.0,<2.0.0
 pandas>=2.0.0
 altair>=5.0.0
 plotly>=5.18.0

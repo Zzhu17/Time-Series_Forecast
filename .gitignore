@@ -22,6 +22,15 @@ Project/artifacts/
 Project/output/
 Project/logs/
 logs/
+Project/Data/processed/
+Project/Data/bronze/
+Project/Data/silver/
+Project/Data/gold/
+Project/Data/predictions/
+!Project/Data/bronze/.gitkeep
+!Project/Data/silver/.gitkeep
+!Project/Data/gold/.gitkeep
+!Project/Data/predictions/.gitkeep
 
 # Common ML artifacts (keep them in artifacts/, not git)
 *.pth
@@ -34,3 +43,11 @@ logs/
 # Local tool temp/cache
 .tmp/
 .cache/
+
+# Frontend
+Project/frontend/node_modules/
+Project/frontend/dist/
+
+# Airflow
+Project/airflow/logs/
+Project/airflow/__pycache__/

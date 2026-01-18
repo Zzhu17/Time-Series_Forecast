@@ -45,7 +45,7 @@ If you previously committed large files (e.g. `Project/artifacts/informer_model.
   ```bash
   PYTHONPATH=Project uvicorn api.app:app --reload --port 8000
   ```
-- If a built frontend exists at `Project/Universal Time-Series Forecast/dist`, it is served at `/ui` to avoid shadowing API routes.
+- If a built frontend exists at `Project/frontend/dist`, it is served at `/ui` to avoid shadowing API routes.
 - Optional auth: set `TSF_API_TOKEN` (or `API_TOKEN`) in the API environment; Streamlit will send it if provided in the sidebar.
 - Endpoints:
   - `GET /health`
@@ -90,11 +90,12 @@ cp .env.example .env
 docker compose up --build
 ```
 
-This starts API + UI + Redis + a Celery worker (async training queue).
+This starts API + Streamlit UI + React UI + Redis + a Celery worker (async training queue).
 To disable the queue and run training in-process, set `CELERY_ENABLED=0` in your env file.
 
 API: `http://localhost:8000`  
 UI: `http://localhost:8501`
+React UI (served by API): `http://localhost:8000/ui`
 
 ### Staging / Prod (compose overrides)
 
@@ -107,7 +108,7 @@ docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod
 ```
 
 Staging ports: API `8001`, UI `8502`, Redis `6380`  
-Prod ports: API `8002`, UI `8503`, Redis `6381`
+Prod ports: API `8002`, UI `8503`, Redis `6381`, React (Nginx) `8080`
 
 ## Observability Demo (Prometheus + Grafana)
 
@@ -149,3 +150,114 @@ git push --force --tags
 ```
 
 Alternatively, use Git LFS for `*.pth` / `*.pkl` if you need to version model artifacts.
+
+## React UI (Customer)
+
+```bash
+cd Project/frontend
+npm install
+npm run dev
+```
+
+Set `VITE_API_URL` if the API is not on `http://localhost:8000`.
+
+Build for production and serve from FastAPI:
+
+```bash
+cd Project/frontend
+npm run build
+cd ../..  # back to repo root
+PYTHONPATH=Project uvicorn api.app:app --reload --port 8000
+```
+
+If you want to stay inside `Project/frontend`, use:
+
+```bash
+PYTHONPATH=.. uvicorn api.app:app --reload --port 8000
+```
+
+Open `http://localhost:8000/ui`.
+
+### Production (Nginx static)
+
+The prod compose file includes a dedicated Nginx container serving the React build:
+
+```
+docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up --build
+```
+
+Open `http://localhost:8080`.
+
+## Design Decisions / Failure Modes
+
+- Optional dependencies (Celery/Prophet/ARIMA/torch) are lazy-imported to keep the API running with minimal installs.
+- When required features are missing, prediction can degrade to a naive baseline instead of hard-failing.
+- Training artifacts are stored per run (`Project/artifacts/runs/<run_id>/`) to keep runs reproducible.
+- Data preprocessing is deterministic (cleaning + optional resample + outlier clip) and produces `processed.parquet` plus `data_profile.json`.
+- Drift checks compare validation/test residual distributions and surface a lightweight drift signal.
+- Hybrid models (LSTM/Informer + XGBoost residual) reuse the same residual modeling hook to keep the stack explainable.
+- Airflow runs use hour-level `run_id` to avoid collisions and keep partitions traceable.
+
+Failure modes to watch:
+- Missing optional deps (torch/pmdarima/prophet/xgboost) will mark models as unavailable and/or trigger fallback.
+- Very long series can slow ARIMA auto-search; use fixed-order or cap `max_train_rows`.
+- Feature leakage (future columns) will inflate metrics; use the feature contract rules to block them.
+- Residual modeling can overfit if residuals are noisy; disable or tighten the residual config.
+
+## CLI Demo
+
+Run the full pipeline from a local file:
+
+```bash
+PYTHONPATH=Project python Project/cli/run_pipeline.py \
+  --data Project/Data/sample_timeseries.csv \
+  --model xgboost \
+  --time-col date \
+  --value-col value \
+  --horizon 24 \
+  --feature-cols auto
+```
+
+## External Demo Script
+
+Single-command demo that starts the API, runs a sync train, and prints the latest artifacts:
+
+```bash
+bash scripts/demo_external.sh
+```
+
+Override model/horizon:
+
+```bash
+MODEL_NAME=baseline HORIZON=24 bash scripts/demo_external.sh
+```
+
+## Smoke Tests
+
+Assuming API is already running:
+
+```bash
+bash scripts/test_smoke.sh
+```
+
+The CLI writes a summary to `Project/output/cli_last_run.json` and prints it to stdout.
+
+## Airflow + Spark (DE Pipeline)
+
+Data layers:
+- Bronze: `Project/Data/bronze/source=<source>/dt=<YYYY-MM-DD>/`
+- Silver: `Project/Data/silver/ds=<YYYY-MM-DD>/`
+- Gold: `Project/Data/gold/ds=<YYYY-MM-DD>/`
+- Predictions: `Project/Data/predictions/ds=<YYYY-MM-DD>/`
+
+Spark jobs (see `Project/spark_jobs/`):
+- `extract_to_bronze.py`
+- `dq_check_bronze.py`
+- `spark_clean_to_silver.py`
+- `spark_features_to_gold.py`
+- `train_and_register_model.py`
+- `batch_predict_and_store.py`
+- `publish_leaderboard_report.py`
+
+Airflow DAG:
+- `Project/airflow/dags/forecast_pipeline.py` (uses env overrides like `TSF_RAW_PATH`, `TSF_MODEL_NAME`, `TSF_TIME_COL`)

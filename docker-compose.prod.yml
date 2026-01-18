@@ -4,16 +4,38 @@ services:
       - .env.prod
     ports:
       - "8002:8000"
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./Project/output:/app/Project/output
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8002}
+    env_file:
+      - .env.prod
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
 
   ui:
     env_file:
       - .env.prod
     ports:
       - "8503:8501"
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./Project/output:/app/Project/output
 
   worker:
     env_file:
       - .env.prod
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./Project/output:/app/Project/output
 
   redis:
     ports:

@@ -36,3 +36,8 @@ def train_xgboost_model_7tuple(df: pd.DataFrame, config: dict):
 
     return train_xgboost_model(df, config)
 
+
+def get_forecaster():
+    from models.base import TrainFunctionForecaster
+
+    return TrainFunctionForecaster("xgboost", train_xgboost_model_7tuple)

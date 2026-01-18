@@ -1,0 +1,40 @@
+{
+  "rows": 200,
+  "cols": 7,
+  "columns": [
+    "time",
+    "total load actual",
+    "month",
+    "day_of_month",
+    "day_of_week",
+    "hour",
+    "day_of_year"
+  ],
+  "generated_at": "2026-01-18T04:24:59.532469Z",
+  "time_min": "2018-12-23 16:00:00+01:00",
+  "time_max": "2018-12-31 23:00:00+01:00",
+  "missing_rate_by_col": {
+    "time": 0.0,
+    "total load actual": 0.0,
+    "month": 0.0,
+    "day_of_month": 0.0,
+    "day_of_week": 0.0,
+    "hour": 0.0,
+    "day_of_year": 0.0
+  },
+  "missing_rate_total": 0.0,
+  "value_stats": {
+    "mean": 26243.554900000003,
+    "std": 4122.714236468115,
+    "p05": 19861.5,
+    "p95": 32527.999999999996
+  },
+  "engineered_time_features": [
+    "month",
+    "day_of_month",
+    "day_of_week",
+    "hour",
+    "day_of_year"
+  ],
+  "dataset_id": "e410859a8c9ededa"
+}

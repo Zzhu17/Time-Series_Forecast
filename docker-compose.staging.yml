@@ -4,16 +4,25 @@ services:
       - .env.staging
     ports:
       - "8001:8000"
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./Project/output:/app/Project/output
 
   ui:
     env_file:
       - .env.staging
     ports:
       - "8502:8501"
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./Project/output:/app/Project/output
 
   worker:
     env_file:
       - .env.staging
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./Project/output:/app/Project/output
 
   redis:
     ports:

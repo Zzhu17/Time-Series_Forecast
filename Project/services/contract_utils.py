@@ -7,6 +7,29 @@ import pandas as pd
 from schemas.contract import FeatureContractReport
 from utils.feature_contract import is_recomputable_name, parse_recompute_name, safe_time_features
 
+_HYBRID_PRESETS = {
+    "xgboost+lstm": {
+        "base": "lstm",
+        "residual_modeling": {
+            "enabled": True,
+            "model_type": "xgboost",
+            "lags": [1, 2, 3, 6, 12, 24],
+            "rolling_windows": [6, 12, 24, 48],
+            "diffs": [1, 24],
+        },
+    },
+    "xgboost+informer": {
+        "base": "informer",
+        "residual_modeling": {
+            "enabled": True,
+            "model_type": "xgboost",
+            "lags": [1, 2, 3, 6, 12, 24],
+            "rolling_windows": [6, 12, 24, 48],
+            "diffs": [1, 24],
+        },
+    },
+}
+
 
 def normalize_model_name(model_name: Any) -> str:
     if not isinstance(model_name, str) or not model_name.strip():
@@ -15,6 +38,20 @@ def normalize_model_name(model_name: Any) -> str:
     if cleaned.lower() in ("none", "null"):
         raise ValueError("请选择 model")
     return cleaned
+
+
+def apply_hybrid_preset(
+    model_name: str,
+    residual_modeling: Optional[dict],
+) -> Tuple[str, Optional[dict], Optional[str]]:
+    key = str(model_name or "").strip().lower()
+    preset = _HYBRID_PRESETS.get(key)
+    if not preset:
+        return model_name, residual_modeling, None
+    base = str(preset.get("base") or model_name)
+    if residual_modeling is None:
+        residual_modeling = preset.get("residual_modeling")
+    return base, residual_modeling, key
 
 
 def coerce_rows(rows: Any) -> List[Dict[str, Any]]:

@@ -14,6 +14,16 @@ def read_csv_upload(file: UploadFile) -> pd.DataFrame:
         raise HTTPException(status_code=400, detail=f"failed to read csv: {e}") from e
 
 
+def read_tabular_upload(file: UploadFile) -> pd.DataFrame:
+    name = str(getattr(file, "filename", "") or "").lower()
+    try:
+        if name.endswith(".parquet") or name.endswith(".pq"):
+            return pd.read_parquet(file.file)
+        return pd.read_csv(file.file)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"failed to read data: {e}") from e
+
+
 def ensure_required_columns(df: pd.DataFrame, *cols: str) -> None:
     missing_cols = [c for c in cols if c not in df.columns]
     if missing_cols:

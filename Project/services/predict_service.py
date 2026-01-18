@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
+from functools import lru_cache
+import os
 import time
 
 import numpy as np
@@ -10,13 +12,14 @@ from configs.config import load_yaml_config
 from services.predict_utils import baseline_predict, predict_with_xgboost
 from services.prediction_payloads import normalize_prediction_payload
 from services.registry import get_model, latest_model_for_name, list_models
-from services.predict_helpers import load_feature_cols, load_pickle, prepare_feature_frame
+from services.predict_helpers import load_pickle, prepare_feature_frame, load_json_file
 from services.xgb_loader import XGBPredictor
 from utils.feature_contract import is_recomputable_name, safe_time_features
 from utils.feature_pipeline import align_predict_df
 from utils.feature_selection import load_feature_contract
 from utils.metrics import observe_predict
 from utils.target_transform import inverse_transform_array
+from models.registry import FORECASTER_REGISTRY
 
 
 def _find_model_record(
@@ -40,6 +43,34 @@ def _find_model_record(
 
 class PredictionNotFoundError(Exception):
     pass
+
+
+def _file_mtime(path: str) -> float:
+    try:
+        return float(os.path.getmtime(path))
+    except Exception:
+        return 0.0
+
+
+@lru_cache(maxsize=16)
+def _load_pickle_cached(path: str, mtime: float):
+    return load_pickle(path)
+
+
+@lru_cache(maxsize=16)
+def _load_json_cached(path: str, mtime: float):
+    return load_json_file(path)
+
+
+@lru_cache(maxsize=4)
+def _xgb_predictor_cached(model_path: str, contract_path: str, mtime_model: float, mtime_contract: float, time_col: str, value_col: str):
+    return XGBPredictor(
+        model_path=model_path,
+        feature_contract_path=contract_path or None,
+        target_transform=None,
+        time_col=time_col,
+        value_col=value_col,
+    )
 
 
 def _fallback_feature_contract(
@@ -76,6 +107,25 @@ def _load_feature_contract(artifacts: Dict[str, Any] | None) -> Optional[Dict[st
         if isinstance(contract, dict):
             return contract
     return None
+
+
+def _load_feature_cols_cached(artifacts: Optional[Dict[str, Any]]) -> list[str]:
+    if isinstance(artifacts, dict):
+        cols = artifacts.get("feature_cols")
+        if isinstance(cols, (list, tuple)) and cols:
+            return [str(c) for c in cols if str(c).strip()]
+        path = artifacts.get("feature_cols_path")
+    else:
+        path = None
+    if isinstance(path, str) and path:
+        payload = _load_json_cached(path, _file_mtime(path))
+        if isinstance(payload, (list, tuple)):
+            return [str(c) for c in payload if str(c).strip()]
+        if isinstance(payload, dict):
+            inner = payload.get("feature_cols")
+            if isinstance(inner, (list, tuple)):
+                return [str(c) for c in inner if str(c).strip()]
+    return []
 
 
 def _build_informer_config(
@@ -212,13 +262,9 @@ def predict_from_registry(
                 contract_path = artifacts.get("feature_cols_path")
             else:
                 contract_path = None
-            predictor = XGBPredictor(
-                model_path=str(model_path) if model_path else "",
-                feature_contract_path=str(contract_path) if contract_path else None,
-                target_transform=None,
-                time_col=time_col,
-                value_col=value_col,
-            )
+            mp = str(model_path) if model_path else ""
+            cp = str(contract_path) if contract_path else ""
+            predictor = _xgb_predictor_cached(mp, cp, _file_mtime(mp), _file_mtime(cp), time_col, value_col)
             preds, _meta, degraded, reason = predictor.predict(df, horizon=horizon)
             return preds, bool(degraded), "xgboost", reason or ""
         except Exception as e:
@@ -229,7 +275,7 @@ def predict_from_registry(
             model_path = artifacts.get("model_path") if isinstance(artifacts, dict) else None
             if not isinstance(model_path, str) or not model_path:
                 raise ValueError("randomforest model_path missing")
-            feature_cols = load_feature_cols(artifacts)
+            feature_cols = _load_feature_cols_cached(artifacts)
             if not feature_cols:
                 raise ValueError("randomforest feature_cols missing")
             contract = _load_feature_contract(artifacts if isinstance(artifacts, dict) else None)
@@ -250,7 +296,7 @@ def predict_from_registry(
                 tail_only=True,
             )
             X = feat_df[feature_cols].tail(1).to_numpy(dtype=np.float32)
-            model = load_pickle(model_path)
+            model = _load_pickle_cached(model_path, _file_mtime(model_path))
             pred_one = np.asarray(model.predict(X), dtype=float).reshape(-1)
             preds = np.repeat(pred_one[-1], max(1, horizon)).astype(float)
             degraded = horizon > 1
@@ -264,7 +310,7 @@ def predict_from_registry(
             model_path = artifacts.get("model_path") if isinstance(artifacts, dict) else None
             if not isinstance(model_path, str) or not model_path:
                 raise ValueError("lstm model_path missing")
-            feature_cols = load_feature_cols(artifacts)
+            feature_cols = _load_feature_cols_cached(artifacts)
             if not feature_cols:
                 raise ValueError("lstm feature_cols missing")
             seq_len = 10
@@ -298,7 +344,7 @@ def predict_from_registry(
                 scaler_path = artifacts.get("scaler_path")
                 if isinstance(scaler_path, str) and scaler_path:
                     try:
-                        scaler = load_pickle(scaler_path)
+                        scaler = _load_pickle_cached(scaler_path, _file_mtime(scaler_path))
                     except Exception:
                         scaler = None
             if scaler is not None:
@@ -364,7 +410,7 @@ def predict_from_registry(
             model_path = artifacts.get("model_path") if isinstance(artifacts, dict) else None
             if not isinstance(model_path, str) or not model_path:
                 raise ValueError("arima model_path missing")
-            model = load_pickle(model_path)
+            model = _load_pickle_cached(model_path, _file_mtime(model_path))
             if hasattr(model, "predict"):
                 try:
                     preds = model.predict(n_periods=max(1, horizon))
@@ -383,7 +429,7 @@ def predict_from_registry(
             model_path = artifacts.get("model_path") if isinstance(artifacts, dict) else None
             if not isinstance(model_path, str) or not model_path:
                 raise ValueError("prophet model_path missing")
-            model = load_pickle(model_path)
+            model = _load_pickle_cached(model_path, _file_mtime(model_path))
             if time_col not in df.columns:
                 raise ValueError("missing time_col for prophet")
             ts = pd.to_datetime(df[time_col], errors="coerce")
@@ -443,6 +489,27 @@ def run_prediction(payload: Dict[str, Any]) -> Dict[str, Any]:
         model_id = normalized.get("model_id")
         model_version = normalized.get("model_version")
         allow_degrade = bool(normalized.get("allow_degrade", False))
+
+        forecaster_factory = FORECASTER_REGISTRY.get(model)
+        if forecaster_factory is not None:
+            try:
+                forecaster = forecaster_factory()
+                if bool(getattr(forecaster, "supports_predict", False)):
+                    preds = forecaster.predict(
+                        df,
+                        horizon,
+                        {"default": {"time_col": time_col, "value_col": value_col}},
+                    )
+                    return {
+                        "status": "ok",
+                        "predictions": np.asarray(preds, dtype=float).reshape(-1).tolist(),
+                        "degraded": False,
+                        "reason": None,
+                        "used_model": model,
+                        "contract_report": contract_report,
+                    }
+            except Exception:
+                pass
 
         if model == "baseline":
             preds = baseline_predict(df, value_col, horizon)

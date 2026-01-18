@@ -109,3 +109,5 @@ class ModelResponse(BaseModel):
 class ModelInfo(BaseModel):
     name: str
     description: str
+    available: bool = True
+    missing_deps: Optional[List[str]] = None

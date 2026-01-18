@@ -16,7 +16,7 @@ from utils.metrics import observe_task
 
 def _artifact_dir_for_task(task_id: str) -> Path:
     project_dir = Path(__file__).resolve().parents[2]
-    art_root = project_dir / "artifacts"
+    art_root = project_dir / "artifacts" / "runs"
     art_dir = art_root / task_id
     art_dir.mkdir(parents=True, exist_ok=True)
     return art_dir
@@ -60,6 +60,7 @@ def build_training_config(
     df: pd.DataFrame,
     task_id: str,
     model_name: str,
+    model_alias: Optional[str] = None,
     time_col: str,
     value_col: str,
     feature_cols: List[str],
@@ -72,10 +73,13 @@ def build_training_config(
     except Exception:
         base_cfg = {}
     config = dict(base_cfg) if isinstance(base_cfg, dict) else {}
+    config["run_id"] = task_id
 
     config.setdefault("model", {})
     config["model"]["name"] = model_name
     config["model_type"] = model_name
+    if model_alias:
+        config["model_alias"] = model_alias
 
     default_cfg = config.setdefault("default", {})
     default_cfg["time_col"] = time_col
@@ -93,6 +97,8 @@ def build_training_config(
     art_dir = _artifact_dir_for_task(task_id)
     model_file = _model_filename(model_name)
     config["artifacts"] = {
+        "run_id": task_id,
+        "run_dir": str(art_dir),
         "model_path": str(art_dir / model_file),
         "scaler_path": str(art_dir / "scaler.pkl"),
         "residual_model_path": str(art_dir / "residual_model.pkl"),
@@ -133,6 +139,7 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
             auto_select_features=True,
         )
         model_name = normalized["model_name"]
+        model_alias = normalized.get("model_alias") if isinstance(normalized.get("model_alias"), str) else None
         time_col = normalized["time_col"]
         value_col = normalized["value_col"]
         feature_cols = normalized["feature_cols"]
@@ -143,6 +150,7 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
             df=df,
             task_id=task_id,
             model_name=model_name,
+            model_alias=model_alias,
             time_col=time_col,
             value_col=value_col,
             feature_cols=feature_cols,
@@ -172,6 +180,7 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
         params = {
             "task_id": task_id,
             "model_name": model_name,
+            "model_alias": model_alias,
             "time_col": time_col,
             "value_col": value_col,
             "feature_cols": feature_cols,
@@ -179,7 +188,7 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
             "contract_report": contract_report,
         }
         model_record = register_model(
-            name=model_name,
+            name=str(model_alias or model_name),
             version=task_id,
             stage="candidate",
             params=params,
@@ -190,6 +199,7 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
         snap_results = cacheable_results(results) if isinstance(results, dict) else {}
 
         return {
+            "run_id": task_id,
             "metrics": metrics,
             "artifacts": artifacts,
             "degraded": degraded,

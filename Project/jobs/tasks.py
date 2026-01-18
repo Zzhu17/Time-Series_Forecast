@@ -41,6 +41,8 @@ def _env_flag(key: str) -> bool:
 
 
 def _celery_enabled() -> bool:
+    if not bool(getattr(celery_app, "available", True)):
+        return False
     if not _env_flag("CELERY_ENABLED"):
         return False
     return bool(str(os.getenv("CELERY_BROKER_URL", "")).strip())

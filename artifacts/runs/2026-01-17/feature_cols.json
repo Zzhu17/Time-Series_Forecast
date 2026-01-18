@@ -1,0 +1,221 @@
+{
+  "version": 1,
+  "time_col": "time",
+  "value_col": "total load actual",
+  "feature_cols": [
+    "total load actual",
+    "month",
+    "day_of_month",
+    "day_of_week",
+    "hour",
+    "total load forecast",
+    "lag_1",
+    "lag_2",
+    "lag_3",
+    "rolling_mean_12",
+    "rolling_mean_24",
+    "lag_6",
+    "price day ahead",
+    "rolling_std_6",
+    "forecast solar day ahead",
+    "rolling_std_12",
+    "price actual",
+    "rolling_std_24"
+  ],
+  "required_core_cols": [
+    "total load actual"
+  ],
+  "repairable_core_cols": [
+    "month",
+    "day_of_month",
+    "day_of_week",
+    "hour",
+    "lag_1",
+    "lag_2",
+    "lag_3",
+    "rolling_mean_12",
+    "rolling_mean_24",
+    "lag_6",
+    "rolling_std_6",
+    "rolling_std_12",
+    "rolling_std_24"
+  ],
+  "optional_cols": [
+    "total load forecast",
+    "price day ahead",
+    "forecast solar day ahead",
+    "price actual"
+  ],
+  "safe_default_cols": [
+    "month",
+    "day_of_month",
+    "day_of_week",
+    "hour",
+    "day_of_year"
+  ],
+  "recomputable_cols": [
+    "lag_1",
+    "lag_2",
+    "lag_3",
+    "rolling_mean_12",
+    "rolling_mean_24",
+    "lag_6",
+    "rolling_std_6",
+    "rolling_std_12",
+    "rolling_std_24"
+  ],
+  "core_cols": [
+    "total load actual"
+  ],
+  "train_median": {
+    "month": 5.0,
+    "day_of_month": 16.0,
+    "day_of_week": 3.0,
+    "hour": 11.5,
+    "total load forecast": 28717.5,
+    "lag_1": 28702.5,
+    "lag_2": 28703.0,
+    "lag_3": 28703.0,
+    "rolling_mean_12": 28277.666666666668,
+    "rolling_mean_24": 28480.833333333336,
+    "lag_6": 28704.0,
+    "price day ahead": 46.38,
+    "rolling_std_6": 1409.6255604090861,
+    "forecast solar day ahead": 582.0,
+    "rolling_std_12": 2722.7726976715803,
+    "price actual": 54.93,
+    "rolling_std_24": 3617.3622193402352
+  },
+  "selection_report": {
+    "input_candidates": [
+      "total load actual",
+      "month",
+      "day_of_month",
+      "day_of_week",
+      "hour",
+      "day_of_year",
+      "lag_1",
+      "lag_2",
+      "lag_3",
+      "lag_6",
+      "rolling_mean_6",
+      "rolling_std_6",
+      "rolling_mean_12",
+      "rolling_std_12",
+      "rolling_mean_24",
+      "rolling_std_24",
+      "forecast solar day ahead",
+      "total load forecast",
+      "price day ahead",
+      "price actual"
+    ],
+    "normalized_candidates": [
+      "total load actual",
+      "month",
+      "day_of_month",
+      "day_of_week",
+      "hour",
+      "day_of_year",
+      "lag_1",
+      "lag_2",
+      "lag_3",
+      "lag_6",
+      "rolling_mean_6",
+      "rolling_std_6",
+      "rolling_mean_12",
+      "rolling_std_12",
+      "rolling_mean_24",
+      "rolling_std_24",
+      "forecast solar day ahead",
+      "total load forecast",
+      "price day ahead",
+      "price actual"
+    ],
+    "removed": [],
+    "scores": {
+      "mi": {
+        "month": 0.059995384271690266,
+        "day_of_month": 0.08817166112790442,
+        "day_of_week": 0.06382547090425827,
+        "hour": 0.4687391580606399,
+        "lag_1": 0.7593073016675564,
+        "lag_2": 0.47759412897582365,
+        "lag_3": 0.3210473013971118,
+        "lag_6": 0.20381578636510866,
+        "rolling_std_6": 0.18477204899451039,
+        "rolling_mean_12": 0.2232457260539018,
+        "rolling_std_12": 0.1290462201138869,
+        "rolling_mean_24": 0.20584831741364873,
+        "rolling_std_24": 0.10513484440254839,
+        "forecast solar day ahead": 0.147420003357551,
+        "total load forecast": 1.2068945476422552,
+        "price day ahead": 0.20399511244964597,
+        "price actual": 0.12137386180539966
+      },
+      "rf_importance": {
+        "month": 0.0004066369364093835,
+        "day_of_month": 0.0005191995866744022,
+        "day_of_week": 0.0003731519340925735,
+        "hour": 0.04056492824350237,
+        "lag_1": 0.002083138576194638,
+        "lag_2": 0.005348225798101324,
+        "lag_3": 0.018094097023017425,
+        "lag_6": 0.0027458883523342257,
+        "rolling_std_6": 0.0012566665923294138,
+        "rolling_mean_12": 0.004278128190166223,
+        "rolling_std_12": 0.0019688475747007793,
+        "rolling_mean_24": 0.0016861010646044246,
+        "rolling_std_24": 0.0007709179394171299,
+        "forecast solar day ahead": 0.005500535324260554,
+        "total load forecast": 0.9133977696969688,
+        "price day ahead": 0.0005054999625098576,
+        "price actual": 0.0005002672047163222
+      },
+      "combined_rank": [
+        "total load forecast",
+        "lag_1",
+        "hour",
+        "lag_2",
+        "lag_3",
+        "rolling_mean_12",
+        "rolling_mean_24",
+        "lag_6",
+        "price day ahead",
+        "rolling_std_6",
+        "forecast solar day ahead",
+        "rolling_std_12",
+        "price actual",
+        "rolling_std_24",
+        "day_of_month",
+        "day_of_week",
+        "month"
+      ]
+    },
+    "redundancy": {
+      "dropped_pairs": [
+        {
+          "keep": "month",
+          "drop": "day_of_year",
+          "corr": 0.9965591950061813
+        },
+        {
+          "keep": "lag_3",
+          "drop": "rolling_mean_6",
+          "corr": 0.973694381029795
+        }
+      ],
+      "dropped_cols": [
+        "day_of_year",
+        "rolling_mean_6"
+      ]
+    },
+    "params": {
+      "missing_rate_threshold": 0.4,
+      "low_variance_threshold": 1e-08,
+      "redundant_corr_threshold": 0.95,
+      "max_features": null,
+      "selector": "mi+rf"
+    }
+  },
+  "created_at": "2026-01-17T21:39:22.170963Z"
+}
