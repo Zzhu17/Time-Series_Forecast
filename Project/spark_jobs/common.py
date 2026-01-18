@@ -9,12 +9,12 @@ import pandas as pd
 
 
 try:  # optional spark dependency
-    from pyspark.sql import SparkSession  # type: ignore
-    from pyspark.sql import functions as F  # type: ignore
+    from pyspark.sql import SparkSession 
+    from pyspark.sql import functions as F 
     _HAS_SPARK = True
 except Exception:  # pragma: no cover
-    SparkSession = None  # type: ignore
-    F = None  # type: ignore
+    SparkSession = None  
+    F = None  
     _HAS_SPARK = False
 
 

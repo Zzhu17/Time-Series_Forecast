@@ -8,9 +8,9 @@ import pandas as pd
 from common import get_spark, read_table, write_parquet
 
 try:
-    from pyspark.sql import functions as F  # type: ignore
+    from pyspark.sql import functions as F  
 except Exception:
-    F = None  # type: ignore
+    F = None 
 
 
 def main() -> int:

@@ -8,11 +8,11 @@ import pandas as pd
 from common import get_spark, read_table, write_parquet
 
 try:
-    from pyspark.sql import functions as F  # type: ignore
-    from pyspark.sql import Window  # type: ignore
+    from pyspark.sql import functions as F 
+    from pyspark.sql import Window 
 except Exception:
-    F = None  # type: ignore
-    Window = None  # type: ignore
+    F = None 
+    Window = None  
 
 
 def _parse_int_list(raw: str) -> list[int]:

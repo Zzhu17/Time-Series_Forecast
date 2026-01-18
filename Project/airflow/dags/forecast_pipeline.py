@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import shlex
 
-from airflow import DAG
+from airflow.models import DAG
 from airflow.operators.bash import BashOperator
 
 
