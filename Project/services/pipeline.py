@@ -9,7 +9,6 @@ import random
 
 from utils.schemas import PipelineRunModel
 from utils.feature_pipeline import save_feature_contract_if_any
-from evaluation.metrics import compute_mape
 
 # ---------- 连续序列拼接：供 plot.py 连续分支直接使用 ----------
 def build_continuous_series(train_df_plot, val_dense, test_dense, time_col=None):
@@ -337,22 +336,39 @@ def run_train_predict_pipeline(config):
             except Exception:
                 pass
 
-    def _basic_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
+    def _safe_mape(yt: np.ndarray, yp: np.ndarray, eps: float = 1e-8) -> float:
+        mean_abs = float(np.mean(np.abs(yt))) if yt.size else 0.0
+        tau = max(eps, 0.01 * mean_abs) if np.isfinite(mean_abs) and mean_abs > 0 else eps
+        mask = np.abs(yt) > tau
+        if int(mask.sum()) == 0:
+            return float("nan")
+        denom = np.abs(yt[mask]) + eps
+        return float(np.mean(np.abs((yp[mask] - yt[mask]) / denom)))
+
+    def _calc_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
         yt = np.asarray(y_true, dtype=float).reshape(-1)
         yp = np.asarray(y_pred, dtype=float).reshape(-1)
         n = min(len(yt), len(yp))
         yt = yt[:n]
         yp = yp[:n]
         if n == 0:
-            return {"rmse": np.nan, "mape": np.nan, "mae": np.nan, "smape": np.nan}
+            return {"rmse": np.nan, "mape": np.nan, "nrmse": np.nan, "smape": np.nan}
+        mask = np.isfinite(yt) & np.isfinite(yp)
+        if int(mask.sum()) == 0:
+            return {"rmse": np.nan, "mape": np.nan, "nrmse": np.nan, "smape": np.nan}
+        yt = yt[mask]
+        yp = yp[mask]
         diff = yp - yt
         rmse = float(np.sqrt(np.mean(diff * diff)))
-        mae = float(np.mean(np.abs(diff)))
-        denom = np.maximum(np.abs(yt), 1e-8)
-        mape = float(np.mean(np.abs(diff) / denom))
-        denom2 = np.maximum(np.abs(yt) + np.abs(yp), 1e-8)
+        denom2 = np.abs(yt) + np.abs(yp) + 1e-8
         smape = float(np.mean(2.0 * np.abs(diff) / denom2))
-        return {"rmse": rmse, "mape": mape, "mae": mae, "smape": smape}
+        std = float(np.std(yt)) + 1e-8
+        nrmse = float(rmse / std) if np.isfinite(std) and std > 1e-8 else np.nan
+        mape = float(_safe_mape(yt, yp))
+        return {"rmse": rmse, "mape": mape, "nrmse": nrmse, "smape": smape}
+
+    def _basic_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
+        return _calc_metrics(y_true, y_pred)
 
     def _baseline_metrics(y_all: np.ndarray, train_len: int, val_len: int, test_len: int) -> dict:
         y_all = np.asarray(y_all, dtype=float).reshape(-1)
@@ -782,38 +798,21 @@ def run_train_predict_pipeline(config):
             if not all(c in df_dense.columns for c in ["y_true", "yhat"]): return None
             dfm = df_dense[["y_true", "yhat"]].dropna()
             if dfm.empty: return None
-            try:
-                y_arr    = np.asarray(dfm["y_true"].values, dtype="float64")
-                yhat_arr = np.asarray(dfm["yhat"].values, dtype="float64")
-                diff     = np.subtract(yhat_arr, y_arr, dtype=float)
-                rmse_val = float(np.sqrt(np.mean(diff * diff)))
-            except Exception:
-                diff = np.subtract(np.asarray(dfm["yhat"].values, dtype="float64"), np.asarray(dfm["y_true"].values, dtype="float64"))
-                rmse_val = float(np.sqrt(np.mean(diff * diff)))
-            mae_val = float(np.mean(np.abs(diff)))
-            try:
-                y = np.asarray(dfm["y_true"].values, dtype="float64").reshape(-1)
-                yhat = np.asarray(dfm["yhat"].values, dtype="float64").reshape(-1)
-                denom = np.maximum(np.abs(y), 1e-8)
-                mape_val = float(np.mean(np.abs(yhat - y) / denom))
-            except Exception:
-                y    = np.asarray(dfm["y_true"].values, dtype="float64")
-                yhat = np.asarray(dfm["yhat"].values, dtype="float64")
-                denom = np.where(np.abs(y) > 1e-12, np.abs(y), np.nan)
-                mape_val = float(np.nanmean(np.abs(yhat - y) / denom))
-            denom2 = np.maximum(np.abs(y) + np.abs(yhat), 1e-8)
-            smape_val = float(np.mean(2.0 * np.abs(yhat - y) / denom2))
-            return {"rmse": rmse_val, "mape": mape_val, "mae": mae_val, "smape": smape_val}
+            return _calc_metrics(dfm["y_true"].values, dfm["yhat"].values)
 
         val_metrics  = _compute_metrics_from_dense(val_dense_std)
         test_metrics = _compute_metrics_from_dense(test_dense_std)
         metrics_blk = config.setdefault("metrics", {})
         if isinstance(val_metrics, dict):
-            metrics_blk["val_rmse"] = val_metrics.get("rmse"); metrics_blk["val_mape"] = val_metrics.get("mape")
-            metrics_blk["val_mae"] = val_metrics.get("mae"); metrics_blk["val_smape"] = val_metrics.get("smape")
+            metrics_blk["val_rmse"] = val_metrics.get("rmse")
+            metrics_blk["val_mape"] = val_metrics.get("mape")
+            metrics_blk["val_nrmse"] = val_metrics.get("nrmse")
+            metrics_blk["val_smape"] = val_metrics.get("smape")
         if isinstance(test_metrics, dict):
-            metrics_blk["test_rmse"] = test_metrics.get("rmse"); metrics_blk["test_mape"] = test_metrics.get("mape")
-            metrics_blk["test_mae"] = test_metrics.get("mae"); metrics_blk["test_smape"] = test_metrics.get("smape")
+            metrics_blk["test_rmse"] = test_metrics.get("rmse")
+            metrics_blk["test_mape"] = test_metrics.get("mape")
+            metrics_blk["test_nrmse"] = test_metrics.get("nrmse")
+            metrics_blk["test_smape"] = test_metrics.get("smape")
         data_blk["val_metrics"]  = val_metrics
         data_blk["test_metrics"] = test_metrics
 
@@ -961,35 +960,21 @@ def run_train_predict_pipeline(config):
         if not all(c in df_dense.columns for c in ["y_true", "yhat"]): return None
         dfm = df_dense[["y_true", "yhat"]].dropna()
         if dfm.empty: return None
-        try:
-            y_arr    = np.asarray(dfm["y_true"].values, dtype="float64")
-            yhat_arr = np.asarray(dfm["yhat"].values, dtype="float64")
-            diff     = np.subtract(yhat_arr, y_arr, dtype=float)
-            rmse_val = float(np.sqrt(np.mean(diff * diff)))
-        except Exception:
-            diff = np.subtract(np.asarray(dfm["yhat"].values, dtype="float64"), np.asarray(dfm["y_true"].values, dtype="float64"))
-            rmse_val = float(np.sqrt(np.mean(diff * diff)))
-        mae_val = float(np.mean(np.abs(diff)))
-        try:
-            mape_val = float(compute_mape(dfm["y_true"].values, dfm["yhat"].values))
-        except Exception:
-            y    = np.asarray(dfm["y_true"].values, dtype="float64")
-            yhat = np.asarray(dfm["yhat"].values, dtype="float64")
-            denom = np.where(np.abs(y) > 1e-12, np.abs(y), np.nan)
-            mape_val = float(np.nanmean(np.abs(yhat - y) / denom))
-        denom2 = np.maximum(np.abs(y) + np.abs(yhat), 1e-8)
-        smape_val = float(np.mean(2.0 * np.abs(yhat - y) / denom2))
-        return {"rmse": rmse_val, "mape": mape_val, "mae": mae_val, "smape": smape_val}
+        return _calc_metrics(dfm["y_true"].values, dfm["yhat"].values)
 
     val_metrics  = _compute_metrics_from_dense(val_dense)
     test_metrics = _compute_metrics_from_dense(test_dense)
     metrics_blk = config.setdefault("metrics", {})
     if isinstance(val_metrics, dict):
-        metrics_blk["val_rmse"] = val_metrics.get("rmse"); metrics_blk["val_mape"] = val_metrics.get("mape")
-        metrics_blk["val_mae"] = val_metrics.get("mae"); metrics_blk["val_smape"] = val_metrics.get("smape")
+        metrics_blk["val_rmse"] = val_metrics.get("rmse")
+        metrics_blk["val_mape"] = val_metrics.get("mape")
+        metrics_blk["val_nrmse"] = val_metrics.get("nrmse")
+        metrics_blk["val_smape"] = val_metrics.get("smape")
     if isinstance(test_metrics, dict):
-        metrics_blk["test_rmse"] = test_metrics.get("rmse"); metrics_blk["test_mape"] = test_metrics.get("mape")
-        metrics_blk["test_mae"] = test_metrics.get("mae"); metrics_blk["test_smape"] = test_metrics.get("smape")
+        metrics_blk["test_rmse"] = test_metrics.get("rmse")
+        metrics_blk["test_mape"] = test_metrics.get("mape")
+        metrics_blk["test_nrmse"] = test_metrics.get("nrmse")
+        metrics_blk["test_smape"] = test_metrics.get("smape")
     data_blk["val_metrics"]  = val_metrics
     data_blk["test_metrics"] = test_metrics
 
@@ -1239,14 +1224,18 @@ def normalize_results_for_app(res, cfg: dict, src_df: pd.DataFrame) -> dict:
             vm["rmse"] = root_m.get("val_rmse")
         if vm.get("mape") is None and "val_mape" in root_m:
             vm["mape"] = root_m.get("val_mape")
-        if vm.get("mape_safe") is None and "val_mape_safe" in root_m:
-            vm["mape_safe"] = root_m.get("val_mape_safe")
+        if vm.get("nrmse") is None and "val_nrmse" in root_m:
+            vm["nrmse"] = root_m.get("val_nrmse")
+        if vm.get("smape") is None and "val_smape" in root_m:
+            vm["smape"] = root_m.get("val_smape")
         if tm.get("rmse") is None and "test_rmse" in root_m:
             tm["rmse"] = root_m.get("test_rmse")
         if tm.get("mape") is None and "test_mape" in root_m:
             tm["mape"] = root_m.get("test_mape")
-        if tm.get("mape_safe") is None and "test_mape_safe" in root_m:
-            tm["mape_safe"] = root_m.get("test_mape_safe")
+        if tm.get("nrmse") is None and "test_nrmse" in root_m:
+            tm["nrmse"] = root_m.get("test_nrmse")
+        if tm.get("smape") is None and "test_smape" in root_m:
+            tm["smape"] = root_m.get("test_smape")
 
     return out
 
@@ -1303,11 +1292,22 @@ def baseline_degraded_results(src_df: pd.DataFrame, cfg: dict, *, error: Excepti
         yp = d["yhat"].to_numpy(dtype=float)
         mask = _np.isfinite(yt) & _np.isfinite(yp)
         if int(mask.sum()) == 0:
-            return {"rmse": _np.nan, "mape": _np.nan, "mape_safe": _np.nan}
+            return {"rmse": _np.nan, "mape": _np.nan, "nrmse": _np.nan, "smape": _np.nan}
         rmse = float(_np.sqrt(_np.mean((yp[mask] - yt[mask]) ** 2)))
-        denom = _np.where(yt[mask] == 0, _np.nan, _np.abs(yt[mask]))
-        mape = float(_np.nanmean(_np.abs((yp[mask] - yt[mask]) / denom)) * 100.0)
-        return {"rmse": rmse, "mape": mape, "mape_safe": mape}
+        diff = yp[mask] - yt[mask]
+        denom = _np.abs(yt[mask]) + _np.abs(yp[mask]) + 1e-8
+        smape = float(_np.mean(2.0 * _np.abs(diff) / denom))
+        std = float(_np.std(yt[mask])) + 1e-8
+        nrmse = float(rmse / std) if _np.isfinite(std) and std > 1e-8 else _np.nan
+        mean_abs = float(_np.mean(_np.abs(yt[mask]))) if int(mask.sum()) else 0.0
+        tau = max(1e-8, 0.01 * mean_abs) if _np.isfinite(mean_abs) and mean_abs > 0 else 1e-8
+        mape_mask = _np.abs(yt[mask]) > tau
+        if int(mape_mask.sum()) == 0:
+            mape = _np.nan
+        else:
+            denom_m = _np.abs(yt[mask][mape_mask]) + 1e-8
+            mape = float(_np.mean(_np.abs(diff[mape_mask] / denom_m)))
+        return {"rmse": rmse, "mape": mape, "nrmse": nrmse, "smape": smape}
 
     val_m = _metrics(val_dense)
     test_m = _metrics(test_dense)

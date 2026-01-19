@@ -18,17 +18,19 @@ def _compute_metrics(n: int = 60):
     y_pred = values[:-1]
     rmse = float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
     mae = float(np.mean(np.abs(y_true - y_pred)))
-    return rmse, mae
+    std = float(np.std(y_true))
+    nrmse = rmse / std if std > 1e-8 else float("nan")
+    return nrmse, mae
 
 
 def test_regression_metrics_not_degrade():
     baseline = _load_baseline()
     n = int(baseline.get("series", {}).get("length", 60))
-    rmse, mae = _compute_metrics(n=n)
+    nrmse, mae = _compute_metrics(n=n)
 
-    base_rmse = float(baseline["metrics"]["rmse"])
+    base_nrmse = float(baseline["metrics"]["nrmse"])
     base_mae = float(baseline["metrics"]["mae"])
     tol = 0.05
 
-    assert rmse <= base_rmse * (1 + tol)
+    assert nrmse <= base_nrmse * (1 + tol)
     assert mae <= base_mae * (1 + tol)

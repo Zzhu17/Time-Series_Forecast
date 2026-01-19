@@ -25,19 +25,21 @@ def unify_length_and_flatten(y_true, y_pred):
     min_len = min(len(y_true), len(y_pred))
     return y_true[-min_len:], y_pred[-min_len:]
 
+def _align_and_mask(y_true, y_pred):
+    yt = to_numpy_safe_force_float(y_true).reshape(-1)
+    yp = to_numpy_safe_force_float(y_pred).reshape(-1)
+    n = min(len(yt), len(yp))
+    yt = yt[:n]
+    yp = yp[:n]
+    mask = np.isfinite(yt) & np.isfinite(yp)
+    return yt[mask], yp[mask]
+
+
 def get_metrics(y_true, y_pred):
-    y_true = to_numpy_safe_force_float(y_true)
-    y_pred = to_numpy_safe_force_float(y_pred)
-    y_true, y_pred = unify_length_and_flatten(y_true, y_pred)
+    y_true, y_pred = _align_and_mask(y_true, y_pred)
     assert len(y_true) == len(y_pred), f"❌ y_true ({len(y_true)}) ≠ y_pred ({len(y_pred)}). 检查模型输出与目标维度是否一致"
-    eps = 1e-8
-    denom = np.maximum(np.abs(y_true), eps)
-    mape = float(np.mean(np.abs(y_true - y_pred) / denom))
-    if _sk_mse is not None:
-        rmse = float(np.sqrt(_sk_mse(y_true, y_pred)))
-    else:
-        diff = (y_true - y_pred).astype(float)
-        rmse = float(np.sqrt(np.mean(diff * diff)))
+    rmse = compute_rmse(y_true, y_pred)
+    mape = compute_mape(y_true, y_pred)
     return mape, rmse
 
 
@@ -47,49 +49,57 @@ def compute_rmse(y_true, y_pred):
     Compute RMSE between y_true and y_pred.
     Both inputs can be array-like, torch tensors, or other convertible types.
     """
-    y_true = to_numpy_safe_force_float(y_true)
-    y_pred = to_numpy_safe_force_float(y_pred)
-    y_true, y_pred = unify_length_and_flatten(y_true, y_pred)
+    y_true, y_pred = _align_and_mask(y_true, y_pred)
+    if y_true.size == 0:
+        return float("nan")
     if _sk_mse is not None:
         return float(np.sqrt(_sk_mse(y_true, y_pred)))
     diff = (y_true - y_pred).astype(float)
     return float(np.sqrt(np.mean(diff * diff)))
 
 
-def compute_mape(y_true, y_pred, eps: float = 1e-8, masked: bool = True) -> float:
-    yt = np.asarray(y_true, dtype=np.float64).reshape(-1)
-    yp = np.asarray(y_pred, dtype=np.float64).reshape(-1)
-    n = min(len(yt), len(yp))
-    yt, yp = yt[:n], yp[:n]
-    if masked:
-        m = np.abs(yt) > eps
-        yt, yp = yt[m], yp[m]
-        if yt.size == 0:
-            return float("nan")
-    return float(np.mean(np.abs((yt - yp) / (np.abs(yt) + eps))))
+def compute_mape(
+    y_true,
+    y_pred,
+    *,
+    eps: float = 1e-8,
+    tau: float | None = None,
+) -> float:
+    yt, yp = _align_and_mask(y_true, y_pred)
+    if yt.size == 0:
+        return float("nan")
+    mean_abs = float(np.mean(np.abs(yt)))
+    if tau is None:
+        tau = max(eps, 0.01 * mean_abs) if np.isfinite(mean_abs) and mean_abs > 0 else eps
+    mask = np.abs(yt) > tau
+    if int(mask.sum()) == 0:
+        return float("nan")
+    denom = np.abs(yt[mask]) + eps
+    return float(np.mean(np.abs((yt[mask] - yp[mask]) / denom)))
+
+
+def compute_smape(y_true, y_pred, eps: float = 1e-8) -> float:
+    yt, yp = _align_and_mask(y_true, y_pred)
+    if yt.size == 0:
+        return float("nan")
+    denom = np.abs(yt) + np.abs(yp) + eps
+    return float(np.mean(2.0 * np.abs(yt - yp) / denom))
+
+
+def compute_nrmse(y_true, y_pred, eps: float = 1e-8) -> float:
+    yt, yp = _align_and_mask(y_true, y_pred)
+    if yt.size == 0:
+        return float("nan")
+    rmse = compute_rmse(yt, yp)
+    denom = float(np.std(yt)) + eps
+    if not np.isfinite(denom) or denom <= eps:
+        return float("nan")
+    return float(rmse / denom)
 
 
 # 安全版本的MAPE，防止分母为零或极小导致的NaN/inf
-def mape_safe(y_true, y_pred, eps: float = 1e-8, masked: bool = True) -> float:
+def mape_safe(y_true, y_pred, eps: float = 1e-8, tau: float | None = None) -> float:
     """
-    计算安全的MAPE，避免分母为零或极小导致的NaN或inf。
-    参数与 compute_mape 一致。
+    Safe MAPE wrapper using a threshold mask to avoid near-zero targets.
     """
-    yt = np.asarray(y_true, dtype=np.float64).reshape(-1)
-    yp = np.asarray(y_pred, dtype=np.float64).reshape(-1)
-    n = min(len(yt), len(yp))
-    yt, yp = yt[:n], yp[:n]
-    if masked:
-        m = np.abs(yt) > eps
-        yt, yp = yt[m], yp[m]
-        if yt.size == 0:
-            return float("nan")
-    denom = np.abs(yt) + eps
-    # 防止分母为零或极小
-    denom = np.where(denom < eps, eps, denom)
-    mape_arr = np.abs((yt - yp) / denom)
-    # 去除无穷大和NaN
-    mape_arr = mape_arr[np.isfinite(mape_arr)]
-    if mape_arr.size == 0:
-        return float("nan")
-    return float(np.mean(mape_arr))
+    return compute_mape(y_true, y_pred, eps=eps, tau=tau)

@@ -19,7 +19,7 @@ def test_models_register_and_list():
         "version": "test",
         "stage": "candidate",
         "params": {"note": "test"},
-        "metrics": {"rmse": 1.0},
+        "metrics": {"nrmse": 1.0},
         "artifacts": {"model_path": "artifacts/test.bin"},
     }
     resp = client.post("/models/register", json=payload)

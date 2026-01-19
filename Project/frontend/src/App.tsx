@@ -75,11 +75,10 @@ const buildMetricSummary = (
     summary.push({ label, value });
   };
   push("Val RMSE", val?.rmse);
-  push("Val MAE", val?.mae);
+  push("Val MAPE", val?.mape);
+  push("Val nRMSE", val?.nrmse);
   push("Val sMAPE", val?.smape);
-  push("Test RMSE", test?.rmse);
-  push("Test MAE", test?.mae);
-  return summary.slice(0, 3);
+  return summary;
 };
 
 const toChartData = (series?: PlotSeries | null) => {

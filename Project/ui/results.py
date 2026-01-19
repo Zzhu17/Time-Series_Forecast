@@ -55,12 +55,7 @@ def render_cached_summary(results: dict, *, model_name: str, time_col: str, valu
         else:
             st.caption(f"Split: train={train_len}, val={val_len}, test={test_len}")
 
-    def _fmt(x, pct=False, safe=False, metrics=None):
-        if safe and isinstance(metrics, dict):
-            if metrics.get("mape_safe") is not None:
-                x = metrics.get("mape_safe")
-            elif metrics.get("mape") is not None:
-                x = metrics.get("mape")
+    def _fmt(x, pct=False):
         if x is None:
             return "—"
         try:
@@ -107,8 +102,12 @@ def render_cached_summary(results: dict, *, model_name: str, time_col: str, valu
         mu_t = _mean_abs_from_plot_blob(_test_plot0)
     rv = val_metrics.get("rmse")
     rt = test_metrics.get("rmse")
+    rv_mape = val_metrics.get("mape")
+    rt_mape = test_metrics.get("mape")
     rv_nrmse = val_metrics.get("nrmse")
     rt_nrmse = test_metrics.get("nrmse")
+    rv_smape = val_metrics.get("smape")
+    rt_smape = test_metrics.get("smape")
     if rv_nrmse is None:
         rv_nrmse = (float(rv) / float(mu_v)) if (rv is not None and mu_v) else None
     if rt_nrmse is None:
@@ -118,15 +117,23 @@ def render_cached_summary(results: dict, *, model_name: str, time_col: str, valu
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        st.metric("Val nRMSE", _fmt(rv_nrmse, pct=True))
-        st.caption(f"RMSE: {_fmt(rv)}")
+        st.metric("Val RMSE", _fmt(rv))
     with c2:
-        st.metric("Val MAPE", _fmt(None, pct=True, safe=True, metrics=val_metrics))
+        st.metric("Val MAPE", _fmt(rv_mape, pct=True))
     with c3:
-        st.metric("Test nRMSE", _fmt(rt_nrmse, pct=True))
-        st.caption(f"RMSE: {_fmt(rt)}")
+        st.metric("Test RMSE", _fmt(rt))
     with c4:
-        st.metric("Test MAPE", _fmt(None, pct=True, safe=True, metrics=test_metrics))
+        st.metric("Test MAPE", _fmt(rt_mape, pct=True))
+
+    c5, c6, c7, c8 = st.columns(4)
+    with c5:
+        st.metric("Val nRMSE", _fmt(rv_nrmse, pct=True))
+    with c6:
+        st.metric("Val sMAPE", _fmt(rv_smape, pct=True))
+    with c7:
+        st.metric("Test nRMSE", _fmt(rt_nrmse, pct=True))
+    with c8:
+        st.metric("Test sMAPE", _fmt(rt_smape, pct=True))
 
     if rv_pct is not None or rt_pct is not None:
         st.caption(f"Relative RMSE (vs mean |y|): Val {rv_pct:.3f}% | Test {rt_pct:.3f}%")

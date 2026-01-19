@@ -26,8 +26,8 @@ def build_leaderboard(
                 "model": model,
                 "split": split,
                 "rmse": m.get("rmse"),
-                "mae": m.get("mae"),
                 "mape": m.get("mape"),
+                "nrmse": m.get("nrmse"),
                 "smape": m.get("smape"),
             }
         )

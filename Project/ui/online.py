@@ -136,16 +136,29 @@ def run_online_inference(
     y_true = pd.to_numeric(df.loc[mask, value_col], errors="coerce").to_numpy()
     y_hat = merged[mask]
     rmse = float(np.sqrt(np.nanmean((y_hat - y_true) ** 2)))
-    denom = np.where(y_true == 0, np.nan, np.abs(y_true))
-    mape = float(np.nanmean(np.abs((y_hat - y_true) / denom)) * 100.0)
+    std = float(np.nanstd(y_true)) + 1e-8
+    nrmse = rmse / std if np.isfinite(std) and std > 1e-8 else float("nan")
+    denom = np.abs(y_true) + np.abs(y_hat) + 1e-8
+    smape = float(np.nanmean(2.0 * np.abs(y_hat - y_true) / denom)) * 100.0
+    mean_abs = float(np.nanmean(np.abs(y_true)))
+    tau = max(1e-8, 0.01 * mean_abs) if np.isfinite(mean_abs) and mean_abs > 0 else 1e-8
+    mape_mask = np.abs(y_true) > tau
+    if int(np.sum(mape_mask)) == 0:
+        mape = float("nan")
+    else:
+        mape = float(np.nanmean(np.abs((y_hat[mape_mask] - y_true[mape_mask]) / (np.abs(y_true[mape_mask]) + 1e-8)))) * 100.0
 
     st.markdown("<div class='tsf-card'>", unsafe_allow_html=True)
     st.markdown("### ⚡ Online rolling inference — Metrics", unsafe_allow_html=True)
-    c1, c2 = st.columns(2)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
         st.metric("Online RMSE", f"{rmse:.4f}")
     with c2:
         st.metric("Online MAPE", f"{mape:.2f}%")
+    with c3:
+        st.metric("Online nRMSE", f"{nrmse:.4f}")
+    with c4:
+        st.metric("Online sMAPE", f"{smape:.2f}%")
 
     online_long = {
         "timestamps": pd.to_datetime(df[time_col]).astype(str).tolist(),
