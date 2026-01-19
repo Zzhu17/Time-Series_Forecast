@@ -76,7 +76,64 @@ def _coerce_plot_blob(blob: Any):
                 return ast.literal_eval(blob)
         except Exception:
             return None
+    if isinstance(blob, dict):
+        out = {}
+        for k, v in blob.items():
+            out[k] = _coerce_plot_blob(v)
+        return out
     return blob
+
+
+def _coerce_leaderboard(rows: Any):
+    if not isinstance(rows, list):
+        return rows
+    out = []
+    for row in rows:
+        if isinstance(row, dict):
+            out.append(row)
+            continue
+        if isinstance(row, str):
+            try:
+                import json as _json, ast
+
+                try:
+                    parsed = _json.loads(row)
+                except Exception:
+                    parsed = ast.literal_eval(row)
+                if isinstance(parsed, dict):
+                    out.append(parsed)
+                    continue
+            except Exception:
+                pass
+        out.append(row)
+    return out
+
+
+def _clean_for_json(obj: Any):
+    if obj is None:
+        return None
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        val = float(obj)
+        return val if np.isfinite(val) else None
+    if isinstance(obj, float):
+        return obj if np.isfinite(obj) else None
+    if isinstance(obj, (pd.Timestamp,)):
+        try:
+            return obj.isoformat()
+        except Exception:
+            return str(obj)
+    if isinstance(obj, (list, tuple)):
+        return [_clean_for_json(v) for v in obj]
+    if isinstance(obj, dict):
+        return {str(k): _clean_for_json(v) for k, v in obj.items()}
+    try:
+        if hasattr(obj, "tolist"):
+            return _clean_for_json(obj.tolist())
+    except Exception:
+        pass
+    return obj
 
 
 def reset_snapshot(path: str = os.path.join("output", "last_results.json")) -> None:
@@ -145,6 +202,15 @@ def cacheable_results(results: dict) -> dict:
     ):
         if k in arts:
             arts_keep[k] = arts.get(k)
+
+    if "plot_data" in data_keep:
+        data_keep["plot_data"] = _coerce_plot_blob(data_keep.get("plot_data"))
+    if "leaderboard" in data_keep:
+        data_keep["leaderboard"] = _coerce_leaderboard(data_keep.get("leaderboard"))
+
+    metrics = _clean_for_json(metrics)
+    data_keep = _clean_for_json(data_keep)
+    arts_keep = _clean_for_json(arts_keep)
 
     return {
         "status": results.get("status", "ok"),
@@ -251,6 +317,7 @@ def safe_artifacts_from_config(cfg: dict) -> dict:
         "model_path",
         "scaler_path",
         "residual_model_path",
+        "xgboost_residual_model_path",
         "y_scaler_path",
         "feature_cols_path",
         "feature_report_path",
@@ -268,6 +335,8 @@ def safe_artifacts_from_config(cfg: dict) -> dict:
         "feature_missing_report",
         "feature_cols",
         "target_idx",
+        "residual_model_type",
+        "residual_feature_cols",
         "randomforest_params",
         "best_params",
         "rf_best_params",

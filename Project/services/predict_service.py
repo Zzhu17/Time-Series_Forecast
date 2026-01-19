@@ -14,7 +14,12 @@ from services.prediction_payloads import normalize_prediction_payload
 from services.registry import get_model, latest_model_for_name, list_models
 from services.predict_helpers import load_pickle, prepare_feature_frame, load_json_file
 from services.xgb_loader import XGBPredictor
-from utils.feature_contract import is_recomputable_name, safe_time_features
+from utils.feature_contract import (
+    ensure_calendar_features,
+    is_recomputable_name,
+    recompute_feature_column,
+    safe_time_features,
+)
 from utils.feature_pipeline import align_predict_df
 from utils.feature_selection import load_feature_contract
 from utils.metrics import observe_predict
@@ -128,6 +133,176 @@ def _load_feature_cols_cached(artifacts: Optional[Dict[str, Any]]) -> list[str]:
     return []
 
 
+def _infer_future_index(df: pd.DataFrame, *, time_col: str, horizon: int) -> Optional[pd.DatetimeIndex]:
+    if horizon <= 0 or time_col not in df.columns:
+        return None
+    ts = pd.to_datetime(df[time_col], errors="coerce", utc=True)
+    ts = ts.dropna()
+    if ts.empty:
+        return None
+    try:
+        ts = ts.dt.tz_localize(None)
+    except Exception:
+        pass
+    ts = ts.sort_values()
+    freq = None
+    try:
+        freq = pd.infer_freq(ts)
+    except Exception:
+        freq = None
+    if not freq:
+        diffs = ts.diff().dropna()
+        if diffs.empty:
+            return None
+        try:
+            freq = diffs.mode().iloc[0]
+        except Exception:
+            freq = None
+        if freq is None or (hasattr(freq, "value") and freq.value <= 0):
+            try:
+                freq = diffs.median()
+            except Exception:
+                freq = None
+    if not freq:
+        return None
+    try:
+        return pd.date_range(start=ts.iloc[-1], periods=horizon + 1, freq=freq)[1:]
+    except Exception:
+        return None
+
+
+def _build_residual_feature_frame(
+    *,
+    df: pd.DataFrame,
+    preds: np.ndarray,
+    time_col: str,
+    value_col: str,
+    feature_cols: list[str],
+) -> Optional[pd.DataFrame]:
+    if not feature_cols:
+        return None
+    preds = np.asarray(preds, dtype=float).reshape(-1)
+    horizon = int(len(preds))
+    if horizon <= 0:
+        return None
+    future_index = _infer_future_index(df, time_col=time_col, horizon=horizon)
+    if future_index is None:
+        return None
+
+    df_hist = df.copy()
+    df_hist[time_col] = pd.to_datetime(df_hist[time_col], errors="coerce", utc=True)
+    try:
+        df_hist[time_col] = df_hist[time_col].dt.tz_localize(None)
+    except Exception:
+        pass
+    df_hist = df_hist.dropna(subset=[time_col]).sort_values(time_col)
+    if df_hist.empty:
+        return None
+    if value_col in df_hist.columns:
+        df_hist[value_col] = pd.to_numeric(df_hist[value_col], errors="coerce")
+
+    future_df = pd.DataFrame({time_col: future_index, value_col: preds})
+    df_aug = pd.concat([df_hist[[time_col, value_col]], future_df], ignore_index=True)
+
+    work = df_aug.copy()
+    if any(c in safe_time_features() for c in feature_cols):
+        try:
+            work = ensure_calendar_features(work, time_col=time_col)
+        except Exception:
+            return None
+
+    for c in feature_cols:
+        if c in ("yhat", time_col):
+            continue
+        if c in work.columns:
+            work[c] = pd.to_numeric(work[c], errors="coerce")
+        elif is_recomputable_name(c):
+            try:
+                work[c] = recompute_feature_column(work, c, value_col=value_col, time_col=time_col)
+            except Exception:
+                return None
+        else:
+            return None
+
+    tail = work.tail(horizon)
+    if tail.empty or len(tail) != horizon:
+        return None
+    X = pd.DataFrame({"yhat": preds})
+    for c in feature_cols:
+        if c == "yhat":
+            continue
+        if c not in tail.columns:
+            return None
+        X[c] = pd.to_numeric(tail[c], errors="coerce")
+    if not np.isfinite(X.to_numpy(dtype=np.float64)).all():
+        return None
+    return X
+
+
+def _apply_xgboost_residual(
+    *,
+    df: pd.DataFrame,
+    preds: np.ndarray,
+    time_col: str,
+    value_col: str,
+    artifacts: Dict[str, Any],
+    residual_cfg: Dict[str, Any],
+) -> Tuple[np.ndarray, bool, str]:
+    model_path = artifacts.get("xgboost_residual_model_path")
+    if not isinstance(model_path, str) or not model_path:
+        return preds, False, "residual_model_path_missing"
+    feature_cols = artifacts.get("residual_feature_cols")
+    if not isinstance(feature_cols, list) or not feature_cols:
+        feature_cols = residual_cfg.get("feature_cols") if isinstance(residual_cfg, dict) else None
+    if not isinstance(feature_cols, list) or not feature_cols:
+        base = []
+        lags = residual_cfg.get("lags") if isinstance(residual_cfg, dict) else None
+        rolls = residual_cfg.get("rolling_windows") if isinstance(residual_cfg, dict) else None
+        diffs = residual_cfg.get("diffs") if isinstance(residual_cfg, dict) else None
+        base = ["month", "day_of_month", "day_of_week", "hour", "day_of_year"]
+        if isinstance(lags, list):
+            base += [f"lag_{int(k)}" for k in lags if int(k) > 0]
+        if isinstance(rolls, list):
+            for w in rolls:
+                wi = int(w)
+                if wi > 0:
+                    base += [f"rolling_mean_{wi}", f"rolling_std_{wi}"]
+        if isinstance(diffs, list):
+            base += [f"diff_{int(k)}" for k in diffs if int(k) > 0]
+        feature_cols = ["yhat"] + base
+    feature_cols = ["yhat"] + [c for c in feature_cols if c != "yhat"]
+
+    X = _build_residual_feature_frame(
+        df=df,
+        preds=preds,
+        time_col=time_col,
+        value_col=value_col,
+        feature_cols=feature_cols,
+    )
+    if X is None:
+        return preds, False, "residual_features_unavailable"
+    try:
+        import xgboost as xgb  # type: ignore
+    except Exception:
+        return preds, False, "xgboost_not_installed"
+
+    try:
+        mdl = xgb.XGBRegressor()
+        mdl.load_model(model_path)
+        try:
+            num_features = mdl.get_booster().num_features()
+            if num_features and int(num_features) != int(X.shape[1]):
+                return preds, False, "residual_feature_mismatch"
+        except Exception:
+            pass
+        res_hat = mdl.predict(X.to_numpy(dtype=np.float32)).astype(np.float64, copy=False).reshape(-1)
+        if len(res_hat) != len(preds):
+            return preds, False, "residual_length_mismatch"
+        return (np.asarray(preds, dtype=float).reshape(-1) + res_hat), True, ""
+    except Exception:
+        return preds, False, "residual_model_failed"
+
+
 def _build_informer_config(
     *,
     model_record: Dict[str, Any],
@@ -236,17 +411,35 @@ def predict_from_registry(
     allow_degrade: bool,
     model_id: Optional[str] = None,
     model_version: Optional[str] = None,
+    residual_modeling: Optional[Dict[str, Any]] = None,
+    model_alias: Optional[str] = None,
 ) -> Tuple[np.ndarray, bool, str, str]:
+    lookup_name = model_alias or model_name
     record = _find_model_record(
-        model_name=model_name,
+        model_name=lookup_name,
         model_id=model_id,
         model_version=model_version,
     )
+    if record is None and model_alias:
+        record = _find_model_record(
+            model_name=model_name,
+            model_id=model_id,
+            model_version=model_version,
+        )
     if record is None:
         raise ValueError("model not found in registry")
 
     model_key = model_name.lower()
     artifacts = record.get("artifacts") if isinstance(record, dict) else {}
+    params = record.get("params") if isinstance(record, dict) else {}
+    residual_cfg = residual_modeling if isinstance(residual_modeling, dict) else None
+    if residual_cfg is None and isinstance(params, dict):
+        residual_cfg = params.get("residual_modeling") if isinstance(params.get("residual_modeling"), dict) else None
+    alias = model_alias
+    if alias is None and isinstance(params, dict):
+        alias = params.get("model_alias") if isinstance(params.get("model_alias"), str) else None
+    if alias is None and isinstance(record, dict):
+        alias = record.get("name") if isinstance(record.get("name"), str) else None
 
     def _fallback(err: Exception, key: str) -> Tuple[np.ndarray, bool, str, str]:
         if allow_degrade:
@@ -401,6 +594,22 @@ def predict_from_registry(
                     preds = inverse_transform_array(preds, tt)
                 except Exception:
                     pass
+            if residual_cfg and isinstance(artifacts, dict):
+                model_type = str(residual_cfg.get("model_type", "xgboost")).lower()
+                if model_type not in ("xgboost", "xgb"):
+                    return preds, False, "lstm", ""
+                preds, applied, reason = _apply_xgboost_residual(
+                    df=df,
+                    preds=preds,
+                    time_col=time_col,
+                    value_col=value_col,
+                    artifacts=artifacts,
+                    residual_cfg=residual_cfg,
+                )
+                if applied:
+                    return preds, False, alias or "lstm", ""
+                if reason:
+                    return preds, False, "lstm", f"residual_skipped:{reason}"
             return preds, False, "lstm", ""
         except Exception as e:
             return _fallback(e, "lstm")
@@ -468,6 +677,22 @@ def predict_from_registry(
         dblk = config.get("data", {}) if isinstance(config, dict) else {}
         degraded = bool(dblk.get("degraded", False)) if isinstance(dblk, dict) else False
         reason = dblk.get("degraded_reason") if isinstance(dblk, dict) else ""
+        if residual_cfg and isinstance(artifacts, dict):
+            model_type = str(residual_cfg.get("model_type", "xgboost")).lower()
+            if model_type not in ("xgboost", "xgb"):
+                return preds, degraded, "informer", reason or ""
+            preds, applied, res_reason = _apply_xgboost_residual(
+                df=df,
+                preds=preds,
+                time_col=time_col,
+                value_col=value_col,
+                artifacts=artifacts,
+                residual_cfg=residual_cfg,
+            )
+            if applied:
+                return preds, degraded, alias or "informer", reason or ""
+            if res_reason:
+                return preds, degraded, "informer", f"{reason or ''}|residual_skipped:{res_reason}".strip("|")
         return preds, degraded, "informer", reason or ""
 
     # Unsupported model types fall back to baseline
@@ -489,9 +714,12 @@ def run_prediction(payload: Dict[str, Any]) -> Dict[str, Any]:
         model_id = normalized.get("model_id")
         model_version = normalized.get("model_version")
         allow_degrade = bool(normalized.get("allow_degrade", False))
+        residual_modeling = normalized.get("residual_modeling")
+        residual_modeling = residual_modeling if isinstance(residual_modeling, dict) else None
+        model_alias = normalized.get("model_alias") if isinstance(normalized.get("model_alias"), str) else None
 
         forecaster_factory = FORECASTER_REGISTRY.get(model)
-        if forecaster_factory is not None:
+        if forecaster_factory is not None and not model_alias and not residual_modeling and not model_id and not model_version:
             try:
                 forecaster = forecaster_factory()
                 if bool(getattr(forecaster, "supports_predict", False)):
@@ -533,6 +761,8 @@ def run_prediction(payload: Dict[str, Any]) -> Dict[str, Any]:
                     allow_degrade=allow_degrade,
                     model_id=model_id,
                     model_version=model_version,
+                    residual_modeling=residual_modeling,
+                    model_alias=model_alias,
                 )
             except Exception as e:
                 if model_id or model_version:

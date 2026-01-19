@@ -710,12 +710,14 @@ def run_train_predict_pipeline(config):
 
                             data_blk["residual_applied"] = True
                             artifacts["residual_model_type"] = "xgboost"
+                            residual_features = ["yhat"] + list(computed_cols)
                             data_blk["residual_report"] = {
                                 "model_type": "xgboost",
-                                "features": ["yhat"] + list(computed_cols),
+                                "features": residual_features,
                                 "early_stopping_rounds": int(es_rounds or 0),
                                 "n_train_rows": int(n_all),
                             }
+                            artifacts["residual_feature_cols"] = residual_features
                             print("[pipeline][registry-route] residual modeling applied (xgboost).")
                         except Exception as _fit_e:
                             print(f"[pipeline][registry-route] residual modeling skipped (xgboost failed): {_fit_e}")

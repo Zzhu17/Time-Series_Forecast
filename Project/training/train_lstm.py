@@ -207,6 +207,14 @@ def train_lstm_model(df: pd.DataFrame, config: dict):
     effective_seq_len = seq_len_cfg
     if total_len < effective_seq_len + 1:
         effective_seq_len = max(1, total_len - 1)
+    train_len = len(train_df_sc)
+    if train_len <= 1:
+        raise RuntimeError(
+            f"LSTM training aborted: train split too small (train_len={train_len}, samples={len(df)}). "
+            "Provide more data or adjust the split/seq_len."
+        )
+    if effective_seq_len >= train_len:
+        effective_seq_len = max(1, train_len - 1)
 
     X_train_list, y_train_list = [], []
     X_val_list, y_val_list, ts_val = [], [], []

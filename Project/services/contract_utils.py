@@ -119,7 +119,21 @@ def validate_required_columns(df: pd.DataFrame, time_col: str, value_col: str) -
 
     y = pd.to_numeric(df[value_col], errors="coerce")
     if y.isna().all():
-        raise ValueError(f"value_col '{value_col}' contains no numeric values")
+        suggestions: List[str] = []
+        try:
+            candidates = []
+            for col in df.columns:
+                if col in (time_col, value_col):
+                    continue
+                series = pd.to_numeric(df[col], errors="coerce")
+                if series.notna().any():
+                    candidates.append((col, float(series.notna().mean())))
+            candidates.sort(key=lambda item: item[1], reverse=True)
+            suggestions = [name for name, _ratio in candidates[:5]]
+        except Exception:
+            suggestions = []
+        hint = f" Suggested numeric columns: {suggestions}" if suggestions else ""
+        raise ValueError(f"value_col '{value_col}' contains no numeric values (all missing).{hint}")
 
     if time_col == value_col:
         raise ValueError("time_col and value_col must be different")

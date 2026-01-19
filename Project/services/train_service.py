@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import json
+import shutil
+import os
 import time
 
 import pandas as pd
@@ -20,6 +23,50 @@ def _artifact_dir_for_task(task_id: str) -> Path:
     art_dir = art_root / task_id
     art_dir.mkdir(parents=True, exist_ok=True)
     return art_dir
+
+
+def _artifact_root() -> Path:
+    return Path(__file__).resolve().parents[2] / "artifacts" / "runs"
+
+
+def _purge_old_runs(current_run_id: str, keep: int = 1) -> None:
+    if keep <= 0:
+        return
+    runs_root = _artifact_root()
+    if not runs_root.exists():
+        return
+    run_dirs = [p for p in runs_root.iterdir() if p.is_dir()]
+    if not run_dirs:
+        return
+    keep_ids = {current_run_id}
+    if keep > 1:
+        extras = [p for p in sorted(run_dirs, key=lambda p: p.stat().st_mtime, reverse=True) if p.name != current_run_id]
+        for p in extras[: max(0, keep - 1)]:
+            keep_ids.add(p.name)
+    for p in run_dirs:
+        if p.name in keep_ids:
+            continue
+        shutil.rmtree(p, ignore_errors=True)
+
+
+def _write_latest_report(run_id: str, artifacts: Dict[str, Any]) -> None:
+    project_dir = Path(__file__).resolve().parents[2]
+    output_dir = project_dir / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = artifacts.get("run_dir") if isinstance(artifacts, dict) else None
+    if not run_dir:
+        model_path = artifacts.get("model_path") if isinstance(artifacts, dict) else None
+        if isinstance(model_path, str) and model_path:
+            run_dir = str(Path(model_path).parent)
+    meta = {
+        "run_dir": run_dir,
+        "leaderboard": artifacts.get("leaderboard_path") if isinstance(artifacts, dict) else None,
+        "report": artifacts.get("report_path") if isinstance(artifacts, dict) else None,
+    }
+    (output_dir / "latest_report.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def _model_filename(model_name: str) -> str:
@@ -195,6 +242,13 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
             metrics=metrics,
             artifacts=artifacts,
         )
+
+        try:
+            _write_latest_report(task_id, artifacts if isinstance(artifacts, dict) else {})
+            keep_runs = int(os.getenv("ARTIFACT_RETENTION_RUNS", "1") or 1)
+            _purge_old_runs(task_id, keep=keep_runs)
+        except Exception:
+            pass
 
         snap_results = cacheable_results(results) if isinstance(results, dict) else {}
 

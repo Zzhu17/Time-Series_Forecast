@@ -25,10 +25,14 @@ type ModelOption = ModelInfo & {
 };
 
 const formatNumber = (value?: number, digits = 4) => {
-  if (value === null || value === undefined || Number.isNaN(value)) {
+  if (value === null || value === undefined) {
     return "--";
   }
-  return Number(value).toFixed(digits);
+  const num = Number(value);
+  if (!Number.isFinite(num)) {
+    return "--";
+  }
+  return num.toFixed(digits);
 };
 
 type MetricSummary = { label: string; value: number };
@@ -82,11 +86,13 @@ const toChartData = (series?: PlotSeries | null) => {
   if (!series || !Array.isArray(series.ts)) {
     return [] as Array<{ ts: string; true: number; pred: number }>;
   }
-  return series.ts.map((ts, idx) => ({
-    ts,
-    true: series.true?.[idx],
-    pred: series.pred?.[idx],
-  }));
+  return series.ts
+    .map((ts, idx) => ({
+      ts: String(ts),
+      true: Number(series.true?.[idx]),
+      pred: Number(series.pred?.[idx]),
+    }))
+    .filter((row) => Number.isFinite(row.true) && Number.isFinite(row.pred));
 };
 
 const pickTimeCol = (columns: string[]) =>
@@ -145,8 +151,7 @@ export default function App() {
     () => modelOptions.find((model) => model.name === selectedModel),
     [modelOptions, selectedModel]
   );
-  const selectedBackendName =
-    selectedOption?.backendName || selectedOption?.name || selectedModel;
+  const selectedRequestName = selectedOption?.name || selectedModel;
   const selectedResidualModeling = selectedOption?.residualModeling ?? null;
   const selectedMissingDeps = selectedOption?.missing_deps || [];
   const selectedUnavailable = selectedOption?.available === false;
@@ -252,16 +257,22 @@ export default function App() {
             (val) => val !== null && val !== undefined && String(val) !== ""
           )
         );
+        const nonEmptyCols = cols.filter((col) =>
+          cleaned.some((row) => {
+            const val = row?.[col];
+            return val !== null && val !== undefined && String(val) !== "";
+          })
+        );
 
-        setColumns(cols);
+        setColumns(nonEmptyCols);
         setRows(cleaned);
         setRowCount(cleaned.length);
 
-        const nextTime = pickTimeCol(cols);
-        const nextValue = pickValueCol(cols, nextTime);
+        const nextTime = pickTimeCol(nonEmptyCols);
+        const nextValue = pickValueCol(nonEmptyCols, nextTime);
         setTimeCol(nextTime);
         setValueCol(nextValue);
-        setFeatureCols(cols.filter((col) => col !== nextTime && col !== nextValue));
+        setFeatureCols(nonEmptyCols.filter((col) => col !== nextTime && col !== nextValue));
         setParsing(false);
       },
       error: () => {
@@ -288,7 +299,7 @@ export default function App() {
   };
 
   const handleRun = async () => {
-    if (!file || !timeCol || !valueCol || !selectedBackendName) {
+    if (!file || !timeCol || !valueCol || !selectedRequestName) {
       setRunError("Please upload a CSV and select model/columns first.");
       setRunState("error");
       return;
@@ -310,7 +321,7 @@ export default function App() {
         apiBase,
         {
           file,
-          modelName: selectedBackendName,
+          modelName: selectedRequestName,
           timeCol,
           valueCol,
           horizon,
@@ -366,6 +377,19 @@ export default function App() {
 
   const artifacts = activeResult?.artifacts || {};
   const artifactEntries = Object.entries(artifacts);
+  const formatArtifactValue = (value: unknown) => {
+    if (value === null || value === undefined) {
+      return "--";
+    }
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      return String(value);
+    }
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  };
 
   const degraded = activeResult?.data?.degraded;
   const degradedReason = activeResult?.data?.degraded_reason;
@@ -791,7 +815,7 @@ export default function App() {
                   {artifactEntries.map(([key, value]) => (
                     <li key={key}>
                       <span>{key}</span>
-                      <span>{value}</span>
+                      <span>{formatArtifactValue(value)}</span>
                     </li>
                   ))}
                 </ul>

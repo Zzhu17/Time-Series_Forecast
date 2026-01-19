@@ -32,6 +32,7 @@ def ensure_required_columns(df: pd.DataFrame, *cols: str) -> None:
 
 def clean_dataframe_for_json(df: pd.DataFrame) -> pd.DataFrame:
     cleaned = df.replace([pd.NA, pd.NaT, float("inf"), float("-inf")], pd.NA)
+    cleaned = cleaned.dropna(axis=1, how="all")
     return cleaned.where(pd.notna(cleaned), None)
 
 
