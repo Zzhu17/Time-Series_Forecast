@@ -7,7 +7,26 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from utils.feature_contract import align_df_to_feature_contract
+from utils.feature_missing_policy import prepare_df_for_non_informer_models
 from utils.feature_selection import FeatureContract, save_feature_contract
+
+
+def build_train_features(
+    df: pd.DataFrame,
+    *,
+    time_col: str,
+    value_col: str,
+    candidate_cols: List[str],
+    config: Dict[str, Any],
+) -> Tuple[pd.DataFrame, List[str], Dict[str, Any]]:
+    cleaned, feature_cols, report = prepare_df_for_non_informer_models(
+        df,
+        time_col=time_col,
+        value_col=value_col,
+        candidate_cols=candidate_cols,
+        config=config,
+    )
+    return cleaned, feature_cols, report
 
 
 def save_feature_contract_if_any(report: Dict[str, Any], artifacts: Dict[str, Any]) -> None:
