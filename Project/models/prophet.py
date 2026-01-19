@@ -67,12 +67,3 @@ def build_prophet(df, yearly=True, weekly=False, daily=False,
         )
         model.fit(df)
         return model
-
-def build_prophet_model(config):
-    return Prophet(
-        yearly_seasonality=config.get("yearly_seasonality", True),
-        weekly_seasonality=config.get("weekly_seasonality", False),
-        daily_seasonality=config.get("daily_seasonality", False),
-        seasonality_mode=config.get("seasonality_mode", "additive"),
-        changepoint_prior_scale=config.get("changepoint_prior_scale", 0.05)
-    )

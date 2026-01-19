@@ -41,14 +41,6 @@ MODEL_CONFIG_RULES = {
     # 可以继续添加其他模型的规则
 }
 
-def get_default_config():
-    config = load_yaml_config()
-    config.setdefault("columns", {
-        "time_col": "date",
-        "value_col": "value"
-    })
-    return config
-
 # Helper function to load a YAML configuration file
 def load_yaml_config(path: str = CONFIG_PATH, env: Optional[str] = None) -> dict:
     """
@@ -106,18 +98,3 @@ def get_informer_config(layer: dict) -> dict:
         if d[k] <= 0:
             d[k] = {"batch_size":1}.get(k, max(1, d[k]))
     return d
-
-def get_thresholds(config):
-    """
-    返回通用的 MAPE 和 RMSE 阈值。
-    """
-    return config.get('thresholds', {"MAPE": 0.1, "RMSE": 10})
-
-def is_residual_enabled(config):
-    """
-    是否启用残差建模。
-    """
-    return config.get('residual_modeling', {}).get('enabled', False)
-
-def get_logging_config(config):
-    return config.get("logging", {})

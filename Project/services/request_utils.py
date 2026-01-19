@@ -7,13 +7,6 @@ import pandas as pd
 from fastapi import HTTPException, UploadFile
 
 
-def read_csv_upload(file: UploadFile) -> pd.DataFrame:
-    try:
-        return pd.read_csv(file.file)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"failed to read csv: {e}") from e
-
-
 def read_tabular_upload(file: UploadFile) -> pd.DataFrame:
     name = str(getattr(file, "filename", "") or "").lower()
     try:
@@ -56,14 +49,6 @@ def parse_residual_modeling(residual_modeling: Optional[str]) -> Optional[dict]:
         return parsed if isinstance(parsed, dict) else None
     except Exception:
         return None
-
-
-def ensure_target_in_features(feature_cols: Optional[List[str]], value_col: str) -> List[str]:
-    cols = [c.strip() for c in (feature_cols or []) if isinstance(c, str) and c.strip()]
-    if not value_col:
-        return cols
-    rest = [c for c in cols if c != value_col]
-    return [value_col] + rest
 
 
 def auto_feature_cols(

@@ -5,16 +5,6 @@ def to_numpy_safe_force_float(x):
         arr = arr.astype(float)
     return arr
 
-def to_numpy_safe(x):
-    import numpy as np
-    if x is None:
-        return np.array([])
-    if isinstance(x, str):  # PATCH: 防止字符串传入
-        return np.array([])
-    if hasattr(x, "detach") and hasattr(x, "cpu"):
-        x = x.detach().cpu().numpy()
-    return np.asarray(x)
-
 import numpy as np
 
 # sklearn is optional; keep metrics working without it.
@@ -66,27 +56,6 @@ def compute_rmse(y_true, y_pred):
     return float(np.sqrt(np.mean(diff * diff)))
 
 
-def compute_mae(y_true, y_pred) -> float:
-    """
-    Compute MAE between y_true and y_pred.
-    """
-    y_true = to_numpy_safe_force_float(y_true)
-    y_pred = to_numpy_safe_force_float(y_pred)
-    y_true, y_pred = unify_length_and_flatten(y_true, y_pred)
-    diff = (y_true - y_pred).astype(float)
-    return float(np.mean(np.abs(diff)))
-
-
-def compute_smape(y_true, y_pred, eps: float = 1e-8) -> float:
-    """
-    Symmetric MAPE: 2*|y-yp|/(|y|+|yp|).
-    """
-    y_true = to_numpy_safe_force_float(y_true)
-    y_pred = to_numpy_safe_force_float(y_pred)
-    y_true, y_pred = unify_length_and_flatten(y_true, y_pred)
-    denom = np.maximum(np.abs(y_true) + np.abs(y_pred), eps)
-    return float(np.mean(2.0 * np.abs(y_true - y_pred) / denom))
-
 def compute_mape(y_true, y_pred, eps: float = 1e-8, masked: bool = True) -> float:
     yt = np.asarray(y_true, dtype=np.float64).reshape(-1)
     yp = np.asarray(y_pred, dtype=np.float64).reshape(-1)
@@ -124,18 +93,3 @@ def mape_safe(y_true, y_pred, eps: float = 1e-8, masked: bool = True) -> float:
     if mape_arr.size == 0:
         return float("nan")
     return float(np.mean(mape_arr))
-
-def compare_metrics(y_true, y_pred_raw, y_pred_corrected):
-    y_true = to_numpy_safe_force_float(y_true)
-    y_pred_raw = to_numpy_safe_force_float(y_pred_raw)
-    y_pred_corrected = to_numpy_safe_force_float(y_pred_corrected)
-    raw_mape, raw_rmse = get_metrics(y_true, y_pred_raw)
-    corrected_mape, corrected_rmse = get_metrics(y_true, y_pred_corrected)
-    return {
-        "raw": {"MAPE": raw_mape, "RMSE": raw_rmse},
-        "corrected": {"MAPE": corrected_mape, "RMSE": corrected_rmse},
-        "improvement": {
-            "MAPE": raw_mape - corrected_mape,
-            "RMSE": raw_rmse - corrected_rmse
-        }
-    }

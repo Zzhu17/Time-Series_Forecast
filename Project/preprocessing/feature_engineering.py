@@ -1,8 +1,5 @@
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import StandardScaler
-import joblib
-import os
 from typing import List, Dict, Any, Tuple, cast
 
 def generate_features(
@@ -108,54 +105,3 @@ def generate_features(
         df = df[[c for c in ordered_cols if c in df.columns] + [c for c in df.columns if c not in ordered_cols]]
 
     return df, time_feature_cols
-
-def fit_and_transform_scaler(
-    train_df: pd.DataFrame, 
-    feature_cols: List[str], 
-    scaler_path: str
-) -> Tuple[pd.DataFrame, StandardScaler]:
-    """
-    在训练数据上拟合 StandardScaler，转换数据，并保存 scaler 对象。
-
-    Args:
-        train_df (pd.DataFrame): 训练数据集。
-        feature_cols (List[str]): 需要进行归一化的特征列名列表。
-        scaler_path (str): 保存 scaler 对象的文件路径。
-
-    Returns:
-        Tuple[pd.DataFrame, StandardScaler]: 归一化后的数据帧和拟合好的 scaler 对象。
-    """
-    scaler = StandardScaler()
-    
-    # 复制 DataFrame 以避免 SettingWithCopyWarning
-    df_scaled = train_df.copy()
-    df_scaled[feature_cols] = scaler.fit_transform(train_df[feature_cols])
-    
-    # 确保保存路径的目录存在
-    os.makedirs(os.path.dirname(scaler_path), exist_ok=True)
-    
-    # 保存 scaler 对象
-    joblib.dump(scaler, scaler_path)
-    print(f"Scaler saved to {scaler_path}")
-    
-    return df_scaled, scaler
-
-def transform_with_scaler(
-    df: pd.DataFrame, 
-    scaler: StandardScaler, 
-    feature_cols: List[str]
-) -> pd.DataFrame:
-    """
-    使用一个已经存在的 scaler 来转换数据。
-
-    Args:
-        df (pd.DataFrame): 需要转换的数据帧 (例如验证集或测试集)。
-        scaler (StandardScaler): 已经拟合好的 scaler 对象。
-        feature_cols (List[str]): 需要进行归一化的特征列名列表。
-
-    Returns:
-        pd.DataFrame: 归一化后的数据帧。
-    """
-    df_scaled = df.copy()
-    df_scaled[feature_cols] = scaler.transform(df[feature_cols])
-    return df_scaled

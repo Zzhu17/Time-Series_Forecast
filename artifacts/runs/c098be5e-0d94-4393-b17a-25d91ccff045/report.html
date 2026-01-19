@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Forecast Report</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 24px; background: #faf7f2; color: #222; }
+    h1 { margin-bottom: 6px; }
+    pre { background: #fff; padding: 12px; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Forecast Report</h1>
+  <p><strong>Model:</strong> lstm</p>
+  <p><strong>Dataset ID:</strong> 5ce8905636fa9608</p>
+  <p><strong>Leaderboard:</strong> /app/artifacts/runs/c098be5e-0d94-4393-b17a-25d91ccff045/leaderboard.csv</p>
+  <h2>Summary</h2>
+  <pre>{
+  "model": "lstm",
+  "dataset_id": "5ce8905636fa9608",
+  "metrics": {
+    "validation": {
+      "rmse": 47.67828879879007,
+      "mape": 2112495.6737858364,
+      "mae": 8.715126455030978,
+      "smape": 0.9101770113156988
+    },
+    "test": {
+      "rmse": 87.82272841739073,
+      "mape": 3982289.1788223526,
+      "mae": 30.918813614073702,
+      "smape": 0.9238048657770008
+    },
+    "baseline": {
+      "naive": {
+        "val": {
+          "rmse": 804.8232522714384,
+          "mape": 0.5732629476387502,
+          "mae": 390.8760736196318,
+          "smape": 1.1465258952775004
+        },
+        "test": {
+          "rmse": 749.233904905924,
+          "mape": 5997089476.48828,
+          "mae": 391.3723840776145,
+          "smape": 1.477885661393856
+        }
+      },
+      "seasonal": {},
+      "season_len": null
+    },
+    "drift": {
+      "drifted": false,
+      "mean_shift": 0.00922531304589527,
+      "std_ratio": 1.0205701246131396,
+      "score": 0.029795437659034835
+    }
+  },
+  "baseline_metrics": {
+    "naive": {
+      "val": {
+        "rmse": 804.8232522714384,
+        "mape": 0.5732629476387502,
+        "mae": 390.8760736196318,
+        "smape": 1.1465258952775004
+      },
+      "test": {
+        "rmse": 749.233904905924,
+        "mape": 5997089476.48828,
+        "mae": 391.3723840776145,
+        "smape": 1.477885661393856
+      }
+    },
+    "seasonal": {},
+    "season_len": null
+  },
+  "drift": {
+    "drifted": false,
+    "mean_shift": 0.00922531304589527,
+    "std_ratio": 1.0205701246131396,
+    "score": 0.029795437659034835
+  },
+  "leaderboard": "/app/artifacts/runs/c098be5e-0d94-4393-b17a-25d91ccff045/leaderboard.csv",
+  "artifacts": {
+    "run_id": "c098be5e-0d94-4393-b17a-25d91ccff045",
+    "run_dir": "/app/artifacts/runs/c098be5e-0d94-4393-b17a-25d91ccff045",
+    "model_path": "/app/artifacts/runs/c098be5e-0d94-4393-b17a-25d91ccff045/lstm_model.pth",
+    "scaler_path": "/app/artifacts/runs/c098be5e-0d94-4393-b17a-25d91ccff045/scaler.pkl",
+    "residual_model_path": "/app/artifacts/runs/c098be5e-0d94-4393-b17a-25d91ccff045/residual_model.pkl",
+    "y_scaler_path": "/app/artifacts/runs/c098be5e-0d94-4393-b17a-25d91ccff045/value_scaler.pkl",
+    "feature_cols_path": "/app/artifacts/runs/c098be5e-0d94-4393-b17a-25d91ccff045/feature_cols.json",
+    "feature_report_path": "/app/artifacts/runs/c098be5e-0d94-4393-b17a-25d91ccff045/feature_report.json",
+    "xgboost_model_path": "/app/artifacts/runs/c098be5e-0d94-4393-b17a-25d91ccff045/xgboost_model.json",
+    "xgboost_residual_model_path": "/app/artifacts/runs/c098be5e-0d94-4393-b17a-25d91ccff045/xgboost_residual_model.json",
+    "dataset_id": "5ce8905636fa9608",
+    "processed_data_path": "/app/Project/Data/processed/processed.parquet",
+    "data_profile_path": "/app/Project/Data/processed/data_profile.json",
+    "run_processed_data_path": "/app/artifacts/runs/c098be5e-0d94-4393-b17a-25d91ccff045/processed.parquet",
+    "run_data_profile_path": "/app/artifacts/runs/c098be5e-0d94-4393-b17a-25d91ccff045/data_profile.json",
+    "feature_cols": [
+      "generation hydro pumped storage consumption",
+      "day_of_month",
+      "day_of_week",
+      "hour",
+      "day_of_year",
+      "total load forecast",
+      "generation fossil gas",
+      "price day ahead",
+      "forecast wind onshore day ahead",
+      "generation hydro water reservoir",
+      "generation fossil brown coal/lignite",
+      "generation fossil hard coal",
+      "price actual",
+      "forecast solar day ahead",
+      "generation other renewable"
+    ],
+    "target_transform": {
+      "method": "log1p",
+      "mode": "plain"
+    },
+    "target_transform_applied": true,
+    "scaler": null,
+    "best_params": {
+      "seq_len": 60,
+      "hidden_size": 128,
+      "num_layers": 2,
+      "learning_rate": 0.001,
+      "weight_decay": 0.0,
+      "batch_size": 64,
+      "epochs": 20,
+      "dropout": 0.0,
+      "patience": 5,
+      "grad_clip": null
+    },
+    "lstm_params": {
+      "seq_len": 60,
+      "hidden_size": 128,
+      "num_layers": 2,
+      "learning_rate": 0.001,
+      "weight_decay": 0.0,
+      "batch_size": 64,
+      "epochs": 20,
+      "dropout": 0.0,
+      "patience": 5,
+      "grad_clip": null
+    },
+    "residual_model_type": "xgboost",
+    "residual_feature_cols": [
+      "yhat",
+      "month",
+      "day_of_month",
+      "day_of_week",
+      "hour",
+      "day_of_year",
+      "lag_1",
+      "lag_2",
+      "lag_3",
+      "lag_6",
+      "lag_12",
+      "lag_24",
+      "rolling_mean_6",
+      "rolling_std_6",
+      "rolling_mean_12",
+      "rolling_std_12",
+      "rolling_mean_24",
+      "rolling_std_24",
+      "rolling_mean_48",
+      "rolling_std_48",
+      "diff_1",
+      "diff_24"
+    ]
+  }
+}</pre>
+</body>
+</html>
