@@ -33,6 +33,21 @@ If you previously committed large files (e.g. `Project/artifacts/informer_model.
 - Run fast tests (no heavy deps required): `PYTHONPATH=Project pytest -q tests`
 - CI runs on GitHub Actions (`.github/workflows/ci.yml`) using `requirements-ci.txt`.
 - Lint/type check (optional locally): `ruff check .` and `PYTHONPATH=Project mypy Project tests` (configured in `pyproject.toml`)
+- Coverage config lives in `coverage.toml` (use `pytest --cov`).
+- Pre-commit hooks: `pre-commit install` (config: `.pre-commit-config.yaml`)
+- Common tasks: `make test`, `make lint`, `make format`, `make run-api`, `make run-ui`
+
+## Docs
+
+Local docs are in `docs/` (served by MkDocs via `mkdocs.yml`):
+
+```bash
+mkdocs serve
+```
+
+## Packaging
+
+This repo includes minimal package metadata in `pyproject.toml` and uses `VERSION` for SemVer.
 
 ## Versioning
 

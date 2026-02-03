@@ -1,0 +1,14 @@
+[run]
+branch = true
+source = ["Project"]
+omit = [
+  "Project/artifacts/*",
+  "Project/output/*",
+  "Project/tmp/*",
+  "Project/preprocessing/*",
+]
+
+[report]
+show_missing = true
+skip_empty = true
+fail_under = 70

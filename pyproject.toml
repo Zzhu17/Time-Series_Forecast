@@ -33,3 +33,19 @@ module = [
     "visualizations.*",
 ]
 ignore_errors = true
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "time-series-forecast"
+dynamic = ["version"]
+description = "Streamlit + FastAPI playground for time-series forecasting."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "Zipeng Zhu" }]
+
+[tool.setuptools.dynamic]
+version = { file = "VERSION" }

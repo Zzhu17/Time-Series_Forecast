@@ -43,47 +43,52 @@ def train_random_forest_model(df: pd.DataFrame, config):
         work[time_col] = pd.to_datetime(work[time_col], errors="coerce")
     for i in range(1, n_lags + 1):
         work[f"lag_{i}"] = work[value_col].shift(i)
+
+    # 2.1) 额外季节性滞后/滚动特征已移除，避免过拟合
+
+    # 2.1) 时间特征（有助于稳定泛化）
+    if time_col in work.columns:
+        work["hour"] = work[time_col].dt.hour
+        work["dayofweek"] = work[time_col].dt.dayofweek
+        work["month"] = work[time_col].dt.month
+        work["day_of_month"] = work[time_col].dt.day
     work = work.dropna().reset_index(drop=True)
 
-    # 3) 切分与缺失值填充（简单 80/20；后续可替换为更严格的时序切法）
-    split_idx = int(len(work) * 0.8)
-    X = work.drop(columns=[c for c in [time_col, value_col] if c in work.columns])
+    # 3) 切分与缺失值填充（80/10/10 时序切分）
+    n_total = len(work)
+    train_end = int(n_total * 0.8)
+    val_end = int(n_total * 0.9)
+
+    # 使用所有数值特征（排除 time_col / value_col）
+    drop_cols = [c for c in [time_col, value_col] if c in work.columns]
+    X = work.drop(columns=drop_cols, errors="ignore")
     y = work[value_col].to_numpy().reshape(-1)
 
     imputer = SimpleImputer(strategy="mean")
     X = pd.DataFrame(imputer.fit_transform(X), columns=X.columns, index=work.index)
 
-    X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
-    y_train, y_test = y[:split_idx], y[split_idx:]
+    X_train, X_val, X_test = X.iloc[:train_end], X.iloc[train_end:val_end], X.iloc[val_end:]
+    y_train, y_val, y_test = y[:train_end], y[train_end:val_end], y[val_end:]
 
-    # 4) 强制 Optuna 调参：把 configs.yaml 的 optimization.n_trials 写入环境变量
-    n_trials = int((config.get("optimization", {}) or {}).get("n_trials", 50))  # 默认 50
-    n_rows = int(len(work))
-    if n_rows > 50000:
-        n_trials = min(n_trials, 10)
-    elif n_rows > 20000:
-        n_trials = min(n_trials, 20)
-    elif n_rows > 10000:
-        n_trials = min(n_trials, 30)
-    os.environ["OPTUNA_N_TRIALS"] = str(n_trials)  # models/random_forest.py 兼容读取
-    os.environ["RF_N_TRIALS"] = str(n_trials)      # 同步一份，确保无论读哪个 key 都生效  [oai_citation:0‡configs.yaml](file-service://file-LvUz4wMVdpTQWJSmE8ievv)
-
-    # 5) 训练（models/random_forest.py 会返回 (model, feature_cols) 且 model.best_params_ 已挂好）
-    model, feature_cols = build_random_forest(X_train, y_train, auto_tune=True)
+    # 4) 训练（稳定参数，关闭 Optuna 调参以降低过拟合）
+    model, feature_cols = build_random_forest(X_train, y_train, auto_tune=False)
     best_params = getattr(model, "best_params_", {}) or {}
 
-    # 6) 预测
-    y_pred = model.predict(X_test)
+    # 5) 预测
+    val_pred = model.predict(X_val)
+    test_pred = model.predict(X_test)
     try:
-        y_pred = np.maximum(y_pred, 0.0)
-        y_pred = pd.Series(y_pred).rolling(window=3, min_periods=1).mean().to_numpy()
+        val_pred = np.maximum(val_pred, 0.0)
+        test_pred = np.maximum(test_pred, 0.0)
+        val_pred = pd.Series(val_pred).rolling(window=3, min_periods=1).mean().to_numpy()
+        test_pred = pd.Series(test_pred).rolling(window=3, min_periods=1).mean().to_numpy()
     except Exception:
         # 后处理失败不影响主流程
         pass
 
-    # 7) 统一数组（验证/测试此处相同切分——若你以后引入专用验证集，可按需替换）
-    val_true, val_forecast, _ = clean_and_unify_arrays(y_test, y_pred)
-    test_true, test_forecast, _ = clean_and_unify_arrays(y_test, y_pred)
+    # 6) 统一数组（验证/测试分离）
+    val_true, val_forecast, _ = clean_and_unify_arrays(y_val, val_pred)
+    test_true, test_forecast, _ = clean_and_unify_arrays(y_test, test_pred)
 
     # 8) 落盘特征列（预测端严格对齐列顺序）
     arts = config.setdefault("artifacts", {})
@@ -109,7 +114,7 @@ def train_random_forest_model(df: pd.DataFrame, config):
     try:
         if time_col in work.columns:
             ts_series = pd.to_datetime(work[time_col], errors="coerce")
-            test_ts = ts_series.iloc[split_idx:].reset_index(drop=True)
+            test_ts = ts_series.iloc[val_end:].reset_index(drop=True)
             # 对齐 y_true / yhat 的长度（以较短者为准）
             L = min(len(test_ts), len(test_true), len(test_forecast))
             if L > 0:

@@ -26,6 +26,12 @@ thresholds:
 metrics:
   robust_rmse: false        # 若想减少离群点影响，可改为 true（需在代码侧支持）
 
+# 默认数据切分比例（用于 ARIMA 等读取 split 的模型）
+split:
+  train: 0.8
+  val: 0.1
+  test: 0.1
+
 evaluation:
   backtest:
     enabled: false
@@ -121,7 +127,8 @@ model_config:
 
   ARIMA:
     mode: fixed
-    use_seasonal: false
+    use_seasonal: true
+    seasonal_period: 24
     max_p: 2
     max_d: 1
     max_q: 2
@@ -133,7 +140,7 @@ model_config:
       use_refit_on_exception: true
       max_eval_points: 500
     train:
-      max_train_rows: 200
+      max_train_rows: 5000
     weight_decay: 0.0001 
   XGBoost:
     # Train-only selection + strict missing policy are handled by the unified pipeline.

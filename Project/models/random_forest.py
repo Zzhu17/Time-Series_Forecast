@@ -48,7 +48,7 @@ def _suggest_params(trial: optuna.trial.Trial, random_state: int = 42) -> dict:
 def build_random_forest(
     X_train: pd.DataFrame | np.ndarray,
     y_train: pd.Series | np.ndarray,
-    auto_tune: bool = True,
+    auto_tune: bool = False,
 ) -> Tuple[RandomForestRegressor, List[str]]:
     """
     使用原生 RandomForestRegressor + Optuna 调参（默认开启），返回 (final_model, selected_features)。
@@ -119,12 +119,13 @@ def build_random_forest(
             "n_jobs":            -1,
         }
     else:
+        # Stable defaults to reduce overfitting and improve generalization on time series.
         best_params = {
-            "n_estimators": 200,
-            "max_depth": 10,
-            "min_samples_split": 2,
-            "min_samples_leaf": 1,
-            "max_features": "sqrt",
+            "n_estimators": 300,
+            "max_depth": 6,
+            "min_samples_split": 10,
+            "min_samples_leaf": 10,
+            "max_features": 0.5,
             "bootstrap": True,
             "random_state": random_state,
             "n_jobs": -1,

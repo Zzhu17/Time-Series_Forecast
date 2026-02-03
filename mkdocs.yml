@@ -1,0 +1,10 @@
+site_name: Time-Series Forecast
+site_description: Engineering docs for the Time-Series Forecast project
+docs_dir: docs
+theme:
+  name: mkdocs
+nav:
+  - Home: index.md
+  - Architecture: architecture.md
+  - API: api.md
+  - Development: development.md
