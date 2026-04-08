@@ -23,6 +23,8 @@ jobs:
         run: ruff check .
       - name: Type check
         run: PYTHONPATH=Project mypy Project tests
+      - name: Check test environment
+        run: ./scripts/check_test_env.sh
       - name: Tests
         run: PYTHONPATH=Project pytest -q tests
       - name: Model tests
