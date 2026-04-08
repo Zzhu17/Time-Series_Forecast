@@ -1378,6 +1378,25 @@ def run_pipeline_and_update_state(
     config.setdefault("data", {})
     config["data"]["dataframe"] = df.copy()
     # Persist UI-selected feature candidates for downstream trainers (non-Informer models rely on this).
+    def _build_error_payload(exc: Exception, *, stage: str, action: str) -> dict:
+        payload = {
+            "status": "error",
+            "message": str(exc),
+            "error_stage": stage,
+            "error_type": type(exc).__name__,
+            "action": action,
+            "metrics": {},
+            "data": {},
+            "artifacts": config.get("artifacts", {}),
+        }
+        config.setdefault("data", {})["last_error"] = {
+            "error_stage": stage,
+            "error_type": type(exc).__name__,
+            "action": action,
+            "message": str(exc),
+        }
+        return payload
+
     try:
         config["data"]["all_feature_cols"] = list(feature_cols or [])
     except Exception:
@@ -1402,13 +1421,20 @@ def run_pipeline_and_update_state(
         if bool(allow_degrade) and looks_like_required_core_error(e):
             results = baseline_degraded_results(df.copy(), config, error=e)
             results = normalize_results_for_app(results, config, df)
+            results["error_stage"] = "data_prep"
+            results["error_type"] = type(e).__name__
+            results["action"] = "degrade"
         else:
-            raise
+            results = _build_error_payload(e, stage="train", action="fail")
 
     # Strip heavy objects and keep artifacts safe
     strip_heavy_inplace(config)
     if isinstance(results, dict):
         results["artifacts"] = safe_artifacts_from_config(config)
+        train_meta = ((config.get("data") or {}).get("train_run_metadata") or (config.get("artifacts") or {}).get("train_run_metadata"))
+        if isinstance(train_meta, dict):
+            results.setdefault("data", {})
+            results["data"]["train_run_metadata"] = dict(train_meta)
         # Persist feature contract if present (non-Informer path)
         try:
             rep = (config.get("data") or {}).get("feature_prep_report")

@@ -1,6 +1,7 @@
 import json
 import os
 import pickle
+import logging
 import numpy as np
 import pandas as pd
 import torch
@@ -14,6 +15,8 @@ from models.lstm import lstm_model
 from utils.array_utils import clean_and_unify_arrays
 from utils.sliding_windows import create_windows_for_ml
 from utils.target_transform import fit_target_transform, transform_df_target, inverse_transform_array
+
+LOG = logging.getLogger(__name__)
 
 # A lightweight fallback scaler in case sklearn is unavailable
 try:  # pragma: no cover - runtime environment guard
@@ -113,6 +116,7 @@ def train_lstm_model(df: pd.DataFrame, config: dict):
     time_col = config.get("time_col", dft.get("time_col", "date"))
     value_col = config.get("value_col", dft.get("value_col", "value"))
     mcfg = (config.get("model_config") or {}).get("LSTM", {}) or {}
+    training_cfg = config.get("training", {}) or {}
 
     hidden_size = mcfg.get("hidden_dim", config.get("hidden_size", 50))
     num_layers = mcfg.get("num_layers", config.get("num_layers", 1))
@@ -124,6 +128,12 @@ def train_lstm_model(df: pd.DataFrame, config: dict):
     dropout = mcfg.get("dropout", config.get("dropout", 0.0))
     patience = int(mcfg.get("patience", config.get("patience", 5)))
     grad_clip = mcfg.get("grad_clip", config.get("grad_clip", None))
+
+    smoke_cfg = training_cfg.get("smoke", {}) or {}
+    smoke_enabled = bool(smoke_cfg.get("enabled", False))
+    if smoke_enabled:
+        batch_size = min(batch_size, int(smoke_cfg.get("batch_size", 8)))
+        epochs = min(int(epochs), int(smoke_cfg.get("epochs", 2)))
 
     data_blk = config.setdefault("data", {})
     artifacts = config.setdefault("artifacts", {})
@@ -267,8 +277,31 @@ def train_lstm_model(df: pd.DataFrame, config: dict):
             f"LSTM training aborted: insufficient data for seq_len={effective_seq_len} "
             f"(samples={len(df)}). Reduce seq_len or provide more data."
         )
+    seed = (
+        config.get("seed")
+        or training_cfg.get("seed")
+        or config.get("default", {}).get("seed")
+    )
+    try:
+        seed = int(seed) if seed is not None else None
+    except Exception:
+        seed = None
+    if seed is not None:
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
     device = get_device_from_config(config)
     dtype = _dtype_from_config(config)
+    run_meta = {
+        "seed": seed,
+        "device": str(device),
+        "dtype": str(dtype).replace("torch.", ""),
+        "smoke_mode": smoke_enabled,
+    }
+    data_blk["train_run_metadata"] = run_meta
+    artifacts["train_run_metadata"] = dict(run_meta)
 
     model = lstm_model(
         input_size=len(feature_cols),
@@ -308,11 +341,22 @@ def train_lstm_model(df: pd.DataFrame, config: dict):
             loss = criterion(pred, batch_y)
             optimizer.zero_grad()
             loss.backward()
+            bad_grad = False
+            for name, p in model.named_parameters():
+                if p.grad is None:
+                    continue
+                if not torch.isfinite(p.grad).all():
+                    bad_grad = True
+                    LOG.warning("[lstm] Non-finite gradient detected in %s, skipping optimizer step.", name)
+                    break
             if grad_clip is not None:
                 try:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                 except Exception:
                     pass
+            if bad_grad:
+                optimizer.zero_grad(set_to_none=True)
+                continue
             optimizer.step()
 
         # --- val monitoring / early stop ---
@@ -342,6 +386,9 @@ def train_lstm_model(df: pd.DataFrame, config: dict):
         with torch.no_grad():
             t = torch.tensor(X_np, device=device, dtype=dtype)
             out = model(t).squeeze(-1).detach().cpu().numpy()
+            if not np.isfinite(out).all():
+                LOG.warning("[lstm] Non-finite prediction output detected; replacing NaN/Inf with finite values.")
+                out = np.nan_to_num(out, nan=0.0, posinf=1e6, neginf=-1e6)
             return out.reshape(-1)
 
     val_pred_sc = _predict(val_X)
@@ -447,6 +494,10 @@ def train_lstm_model(df: pd.DataFrame, config: dict):
         "dropout": dropout,
         "patience": patience,
         "grad_clip": grad_clip,
+        "seed": seed,
+        "device": str(device),
+        "dtype": run_meta["dtype"],
+        "smoke_mode": smoke_enabled,
     }
 
     # For interface compatibility: test_forecast_df mirrors test_dense
