@@ -66,6 +66,26 @@ def train_prophet_model(df, config):
     )
 
     model.fit(df_train)
+    cv_summary = None
+    try:
+        rolling_cfg = (((config.get("model_config") or {}).get("Prophet") or {}).get("rolling_cv") or {})
+        if bool(rolling_cfg.get("enabled", False)):
+            from prophet.diagnostics import cross_validation, performance_metrics
+
+            cv_df = cross_validation(
+                model,
+                initial=str(rolling_cfg.get("initial", "180 days")),
+                period=str(rolling_cfg.get("period", "30 days")),
+                horizon=str(rolling_cfg.get("horizon", "30 days")),
+                parallel=str(rolling_cfg.get("parallel", "processes")),
+            )
+            perf_df = performance_metrics(cv_df, rolling_window=float(rolling_cfg.get("rolling_window", 0.1)))
+            if isinstance(perf_df, pd.DataFrame) and not perf_df.empty:
+                last = perf_df.tail(1).iloc[0].to_dict()
+                cv_summary = {k: float(v) if isinstance(v, (int, float, np.floating)) else v for k, v in last.items()}
+    except Exception:
+        cv_summary = None
+
     forecast = model.predict(df_test)
     y_true = df_test["y"].values
     y_pred = forecast["yhat"].values
@@ -86,5 +106,7 @@ def train_prophet_model(df, config):
             _save_model(final_model, model_path)
         except Exception:
             pass
+    if cv_summary is not None:
+        arts["prophet_rolling_cv"] = cv_summary
 
     return val_true, val_forecast, test_true, test_forecast, final_model, test_forecast_df, best_params

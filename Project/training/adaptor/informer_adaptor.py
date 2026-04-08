@@ -1,4 +1,6 @@
 import pandas as pd
+import random
+import numpy as np
 
 def train_informer_model_7tuple(df, config):
     """
@@ -10,10 +12,19 @@ def train_informer_model_7tuple(df, config):
     from models.informer.train import train_informer_model
 
     # 原 informer 训练入口通常只吃 config，这里按你现状调用
-    final_model, result_df = train_informer_model(config)
+    seed = int(config.get("seed", config.get("default", {}).get("seed", 42)) or 42)
+    random.seed(seed)
+    np.random.seed(seed)
+    arts = config.setdefault("artifacts", {})
+    arts["training_meta"] = {"model": "informer", "seed": seed, "smoke_mode": bool(config.get("smoke_mode", False))}
+    if bool(config.get("smoke_mode", False)):
+        config.setdefault("model_config", {}).setdefault("Informer", {})["epochs"] = 1
+    try:
+        final_model, result_df = train_informer_model(config)
+    except Exception as exc:
+        raise RuntimeError(f"informer_train_failed: {type(exc).__name__}: {exc}") from exc
 
     # 优先使用训练过程写回的 dense 输出（严格对齐 6:2:2 的 val/test 段长度）
-    import numpy as np
     data_blk = config.get("data", {}) or {}
 
     def _extract_from_df(df_like):

@@ -4,6 +4,7 @@ import importlib.util
 from typing import Any, Dict, List, Optional
 
 from services import registry
+from models.registry import MODEL_CATALOG
 
 
 ALLOWED_STAGES = {"candidate", "production", "archived"}
@@ -35,61 +36,13 @@ def _check_deps(deps: List[str]) -> tuple[bool, List[str]]:
 
 
 def list_model_catalog() -> List[Dict[str, str]]:
-    catalog = [
-        {
-            "name": "baseline",
-            "description": "Naive last-value persistence.",
-            "deps": [],
-        },
-        {
-            "name": "informer",
-            "description": "Transformer forecaster (requires torch).",
-            "deps": ["torch"],
-        },
-        {
-            "name": "lstm",
-            "description": "LSTM forecaster (requires torch).",
-            "deps": ["torch"],
-        },
-        {
-            "name": "xgboost",
-            "description": "Gradient boosting regressor (requires xgboost).",
-            "deps": ["xgboost"],
-        },
-        {
-            "name": "randomforest",
-            "description": "Random forest regressor (requires scikit-learn).",
-            "deps": ["sklearn"],
-        },
-        {
-            "name": "arima",
-            "description": "Auto ARIMA (requires pmdarima).",
-            "deps": ["pmdarima"],
-        },
-        {
-            "name": "prophet",
-            "description": "Prophet forecaster (requires prophet).",
-            "deps": ["prophet"],
-        },
-        {
-            "name": "xgboost+informer",
-            "description": "Informer forecast + XGBoost residual correction.",
-            "deps": ["torch", "xgboost"],
-        },
-        {
-            "name": "xgboost+lstm",
-            "description": "LSTM forecast + XGBoost residual correction.",
-            "deps": ["torch", "xgboost"],
-        },
-    ]
-
     out: List[Dict[str, str]] = []
-    for item in catalog:
+    for name, item in MODEL_CATALOG.items():
         deps = item.get("deps") or []
         available, missing = _check_deps(deps)
         out.append(
             {
-                "name": item["name"],
+                "name": name,
                 "description": item["description"],
                 "available": available,
                 "missing_deps": missing or None,
