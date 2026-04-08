@@ -18,6 +18,18 @@ The Streamlit UI calls the FastAPI service; keep the API running at the URL show
 - Optional environment overrides: `Project/configs/configs.{env}.yaml`
 - Select env via `TSF_ENV` (e.g., `dev`, `staging`, `prod`)
 
+## 当前训练主链路
+
+当前训练入口已经切换到 service/pipeline 主链路，`Project/training/train.py` 仅保留为弃用占位：
+
+1. `services.train_service.run_training_task`
+2. `services.pipeline.run_train_predict_pipeline`
+3. `models.registry.TRAINER_REGISTRY`
+
+### PR Checklist（文档一致性）
+
+- [ ] 若变更训练入口/调度链路，已同步更新 `README.md`、`docs/architecture.md` 与 `Project/configs/configs.yaml` 的相关说明。
+
 ## Repo hygiene (GitHub-friendly)
 
 This repo generates training outputs locally (models, scalers, plots, snapshots). They are intentionally ignored by git:
