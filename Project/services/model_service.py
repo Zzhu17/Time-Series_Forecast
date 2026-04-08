@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 from typing import Any, Dict, List, Optional
 
+from models.registry import FORECASTER_REGISTRY, TRAINER_REGISTRY
 from services import registry
 
 
@@ -85,12 +86,15 @@ def list_model_catalog() -> List[Dict[str, str]]:
 
     out: List[Dict[str, str]] = []
     for item in catalog:
+        name = item["name"]
         deps = item.get("deps") or []
         available, missing = _check_deps(deps)
         out.append(
             {
-                "name": item["name"],
+                "name": name,
                 "description": item["description"],
+                "trainer_key": name if name in TRAINER_REGISTRY else None,
+                "forecaster_key": name if name in FORECASTER_REGISTRY else None,
                 "available": available,
                 "missing_deps": missing or None,
             }

@@ -22,7 +22,7 @@ from utils.feature_contract import (
 )
 from utils.feature_pipeline import align_predict_df
 from utils.feature_selection import load_feature_contract
-from utils.metrics import observe_predict
+from utils.metrics import observe_degrade, observe_predict
 from utils.target_transform import inverse_transform_array
 from models.registry import FORECASTER_REGISTRY
 
@@ -703,6 +703,8 @@ def predict_from_registry(
 def run_prediction(payload: Dict[str, Any]) -> Dict[str, Any]:
     start_ts = time.time()
     model_name = "unknown"
+    degraded_flag = False
+    degraded_reason: Optional[str] = None
     try:
         df, normalized, contract_report = normalize_prediction_payload(payload)
 
@@ -781,6 +783,8 @@ def run_prediction(payload: Dict[str, Any]) -> Dict[str, Any]:
                     used_model = f"{model}->baseline"
                     reason = "model_not_available"
 
+            degraded_flag = bool(degraded)
+            degraded_reason = reason or None
             return {
                 "status": "ok",
                 "predictions": preds.tolist(),
@@ -791,6 +795,8 @@ def run_prediction(payload: Dict[str, Any]) -> Dict[str, Any]:
             }
 
         preds = baseline_predict(df, value_col, horizon)
+        degraded_flag = True
+        degraded_reason = "model_not_supported"
         return {
             "status": "ok",
             "predictions": preds.tolist(),
@@ -800,4 +806,9 @@ def run_prediction(payload: Dict[str, Any]) -> Dict[str, Any]:
             "contract_report": contract_report,
         }
     finally:
+        try:
+            if degraded_flag:
+                observe_degrade(stage="predict", model=model_name, reason=degraded_reason)
+        except Exception:
+            pass
         observe_predict(model=model_name, duration=time.time() - start_ts)

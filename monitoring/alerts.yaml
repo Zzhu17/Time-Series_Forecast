@@ -35,3 +35,13 @@ groups:
         annotations:
           summary: "Task failures detected"
           description: "Training task failures observed in the last 5 minutes."
+
+      - alert: DegradeRateHigh
+        expr: |
+          sum(rate(degrade_events_total[10m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Degrade events above threshold"
+          description: "Degrade rate exceeded 0.05 events/sec for 10 minutes."

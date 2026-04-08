@@ -69,8 +69,11 @@ def train_informer_model_7tuple(df, config):
                         val_true, val_forecast = _extract_from_df(df_)
                         test_true, test_forecast = np.array([], dtype=float), np.array([], dtype=float)
 
-    # 最佳超参：Informer 若无调参可设 None（保持统一位置）
-    best_params = None
+    # 统一返回 training_params，便于注册/落盘追踪
+    best_params = {
+        "model_name": "informer",
+        "trainer": "informer_adaptor",
+    }
     test_forecast_df = data_blk.get("test_dense") if isinstance(data_blk.get("test_dense"), pd.DataFrame) else data_blk.get("test_result_df")
 
     return (
