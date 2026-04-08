@@ -102,6 +102,71 @@ def _default_target_transform(model_name: str) -> Dict[str, Any]:
     }
 
 
+def _metric_value(metrics_block: Dict[str, Any], metric_name: str) -> Optional[float]:
+    if not isinstance(metrics_block, dict):
+        return None
+    target = metric_name.lower()
+    for key, val in metrics_block.items():
+        if str(key).lower() != target:
+            continue
+        try:
+            num = float(val)
+            if num == num:
+                return num
+        except Exception:
+            return None
+    return None
+
+
+def _evaluate_quality_gate(config: Dict[str, Any], metrics: Dict[str, Any]) -> Optional[str]:
+    gate_cfg = (config or {}).get("quality_gate")
+    if not isinstance(gate_cfg, dict) or not bool(gate_cfg.get("enabled", True)):
+        return None
+    test_metrics = metrics.get("test") if isinstance(metrics.get("test"), dict) else {}
+    baseline_metrics = metrics.get("baseline") if isinstance(metrics.get("baseline"), dict) else {}
+    reasons: List[str] = []
+
+    required_metrics = gate_cfg.get("required_metrics")
+    if isinstance(required_metrics, dict):
+        for metric_name, threshold in required_metrics.items():
+            val = _metric_value(test_metrics, str(metric_name))
+            if val is None:
+                reasons.append(f"missing test metric: {metric_name}")
+                continue
+            try:
+                limit = float(threshold)
+            except Exception:
+                reasons.append(f"invalid threshold for {metric_name}")
+                continue
+            if val > limit:
+                reasons.append(f"{metric_name}={val:.6g} > {limit:.6g}")
+
+    baseline_cfg = gate_cfg.get("baseline")
+    if isinstance(baseline_cfg, dict) and bool(baseline_cfg.get("enabled", True)):
+        max_degradation = baseline_cfg.get("max_degradation")
+        if isinstance(max_degradation, dict):
+            for metric_name, rel_tol in max_degradation.items():
+                test_val = _metric_value(test_metrics, str(metric_name))
+                base_val = _metric_value(baseline_metrics, str(metric_name))
+                if test_val is None or base_val is None:
+                    reasons.append(f"missing baseline compare metric: {metric_name}")
+                    continue
+                try:
+                    tol = float(rel_tol)
+                except Exception:
+                    reasons.append(f"invalid baseline threshold for {metric_name}")
+                    continue
+                allow_upper = base_val * (1.0 + tol)
+                if test_val > allow_upper:
+                    reasons.append(
+                        f"{metric_name} degraded: test={test_val:.6g}, baseline={base_val:.6g}, tol={tol:.2%}"
+                    )
+
+    if reasons:
+        return "; ".join(reasons)
+    return None
+
+
 def build_training_config(
     *,
     df: pd.DataFrame,
@@ -223,6 +288,8 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
         data = results.get("data", {}) if isinstance(results, dict) else {}
         degraded = bool(data.get("degraded", False))
         degraded_reason = data.get("degraded_reason")
+        gate_failed_reason = _evaluate_quality_gate(config, metrics)
+        model_stage = "archived" if gate_failed_reason else "candidate"
         fallback_model = data.get("degraded_mode") if degraded else None
         if degraded and emit_metrics:
             observe_degrade(model=model_alias or model_name, reason=degraded_reason)
@@ -240,7 +307,7 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
         model_record = register_model(
             name=str(model_alias or model_name),
             version=task_id,
-            stage="candidate",
+            stage=model_stage,
             params=params,
             metrics=metrics,
             artifacts=artifacts,
@@ -261,6 +328,7 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
             "artifacts": artifacts,
             "degraded": degraded,
             "degraded_reason": degraded_reason,
+            "gate_failed_reason": gate_failed_reason,
             "fallback_model": fallback_model,
             "model_record": model_record,
             "results": results,
