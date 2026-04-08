@@ -70,15 +70,20 @@ class TaskRecord(Base):
             except Exception:
                 return None
 
+        parsed_params = _loads(self.params)
+        parsed_metrics = _loads(self.metrics)
+        parsed_artifacts = _loads(self.artifacts)
         return {
             "id": self.id,
             "status": self.status,
             "model_name": self.model_name,
-            "params": _loads(self.params),
-            "metrics": _loads(self.metrics),
-            "artifacts": _loads(self.artifacts),
+            "params": parsed_params,
+            "metrics": parsed_metrics,
+            "artifacts": parsed_artifacts,
             "error": self.error,
             "degraded": bool(self.degraded),
+            "degraded_reason": parsed_artifacts.get("degraded_reason") if isinstance(parsed_artifacts, dict) else None,
+            "fallback_model": parsed_artifacts.get("fallback_model") if isinstance(parsed_artifacts, dict) else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

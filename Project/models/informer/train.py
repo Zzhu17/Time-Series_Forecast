@@ -321,6 +321,7 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
     informer_cfg = config['model_config']['Informer']
     artifacts_cfg = config['artifacts']
     device = get_device_from_config(config)
+    dtype = str(config.get("dtype") or config.get("default", {}).get("dtype") or "float32")
 
     # --- 0) Ensure we have scaled train/val/test in config (platform-level robustness) ---
     data_blk = config.setdefault("data", {})
@@ -484,6 +485,13 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
         artifacts_cfg["scaler"] = scaler_local
 
     _ensure_scaled_splits()
+    config.setdefault("data", {})["train_run_metadata"] = {
+        "seed": seed,
+        "device": str(device),
+        "dtype": dtype,
+        "smoke_mode": bool((config.get("training") or {}).get("smoke", {}).get("enabled", False)),
+    }
+    config.setdefault("artifacts", {})["train_run_metadata"] = dict(config["data"]["train_run_metadata"])
 
     train_df_sc = data_blk["train_df_sc"]
     val_df_sc = data_blk["val_df_sc"]
@@ -715,10 +723,21 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
             batch_y     = torch.as_tensor(batch_y,     dtype=torch.float32, device=device).contiguous()
             outputs = informer_forward(model, batch_x_enc, batch_x_dec, device=device, return_numpy=False)
             y_tgt = batch_y[:, -pred_len:, target_idx:target_idx+1]
+            if not torch.isfinite(outputs).all():
+                log.warning("[informer] Non-finite training outputs detected, replacing with finite fallback.")
+                outputs = torch.nan_to_num(outputs, nan=0.0, posinf=1e6, neginf=-1e6)
             loss = criterion(outputs[:, -pred_len:, :], y_tgt.to(device))
             if not torch.isfinite(loss):
                 raise ValueError("Informer training loss became NaN/Inf. Usually caused by NaN in inputs or unstable gradients.")
             loss.backward()
+            bad_grad = False
+            for name, p in model.named_parameters():
+                if p.grad is None:
+                    continue
+                if not torch.isfinite(p.grad).all():
+                    log.warning("[informer] Non-finite gradient detected in %s, skipping optimizer step.", name)
+                    bad_grad = True
+                    break
             # Optional: gradient clipping for stability
             grad_clip = informer_cfg.get("grad_clip", 1.0)
             try:
@@ -727,6 +746,9 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
                 grad_clip_v = None
             if grad_clip_v is not None and grad_clip_v > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_v)
+            if bad_grad:
+                optimizer.zero_grad(set_to_none=True)
+                continue
             optimizer.step()
             epoch_loss.append(loss.item())
 
@@ -743,6 +765,9 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
                 batch_x_dec = torch.as_tensor(batch_x_dec, dtype=torch.float32, device=device).contiguous()
                 batch_y     = torch.as_tensor(batch_y,     dtype=torch.float32, device=device).contiguous()
                 outputs = informer_forward(model, batch_x_enc, batch_x_dec, device=device, return_numpy=False)
+                if not torch.isfinite(outputs).all():
+                    log.warning("[informer] Non-finite validation outputs detected, replacing with finite fallback.")
+                    outputs = torch.nan_to_num(outputs, nan=0.0, posinf=1e6, neginf=-1e6)
                 y_tgt = batch_y[:, -pred_len:, target_idx:target_idx+1]
                 loss = criterion(outputs[:, -pred_len:, :], y_tgt.to(device))
                 val_loss.append(loss.item())

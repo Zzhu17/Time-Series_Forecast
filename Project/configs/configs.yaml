@@ -17,7 +17,7 @@ thresholds:
   RMSE: 10            # 10（与数据度量一致）
   early_stop_metric: MAPE   # 仍保留基准早停参考（不移除此键，保证兼容）
 
-  # === 新增：与训练早停联动的策略参数（train.py 将读取）===
+  # === 与训练早停联动的策略参数（当前链路：train_service -> pipeline -> trainer/adaptor）===
   apply_to: val             # 对哪一段进行阈值判断：val / test
   logic: and                # and / or：需要同时满足还是满足其一才允许停止
   enforce_in_early_stop: true   # 将阈值作为“允许停止”的前置条件
@@ -209,6 +209,19 @@ prediction:
 # Baseline settings
 baseline:
   season_len: 0
+
+quality_gate:
+  enabled: true
+  required_metrics:
+    MAPE: 0.30
+    RMSE: 100.0
+    MAE: 80.0
+  baseline:
+    enabled: true
+    max_degradation:
+      MAPE: 0.05
+      RMSE: 0.05
+      MAE: 0.05
 
 # 通用模型配置参数，包括阈值设定与模型默认结构
 

@@ -1,5 +1,14 @@
 import pandas as pd
 
+def _apply_informer_smoke_config(config: dict) -> None:
+    training_cfg = (config.get("training") or {})
+    smoke_cfg = (training_cfg.get("smoke") or {})
+    if not bool(smoke_cfg.get("enabled", False)):
+        return
+    inf_cfg = config.setdefault("model_config", {}).setdefault("Informer", {})
+    inf_cfg["batch_size"] = min(int(inf_cfg.get("batch_size", 32)), int(smoke_cfg.get("batch_size", 8)))
+    inf_cfg["n_epochs"] = min(int(inf_cfg.get("n_epochs", 10)), int(smoke_cfg.get("epochs", 2)))
+
 def train_informer_model_7tuple(df, config):
     """
     适配器：不改 informer/train.py；
@@ -8,6 +17,9 @@ def train_informer_model_7tuple(df, config):
     """
     # 延迟导入，避免循环依赖
     from models.informer.train import train_informer_model
+    _apply_informer_smoke_config(config)
+
+    artifacts = config.setdefault("artifacts", {})
 
     # 原 informer 训练入口通常只吃 config，这里按你现状调用
     final_model, result_df = train_informer_model(config)
@@ -74,13 +86,26 @@ def train_informer_model_7tuple(df, config):
         "model_name": "informer",
         "trainer": "informer_adaptor",
     }
+    split_info = data_blk.get("split") if isinstance(data_blk.get("split"), dict) else {}
+    # 第7位固定 training_params(dict)
+    training_params = {
+        "model": "informer",
+        "split": {
+            "train_len": int(split_info.get("train_len") or max(0, len(df) - (len(val_true) if val_true is not None else 0) - (len(test_true) if test_true is not None else 0))),
+            "val_len": int(split_info.get("val_len") or (len(val_true) if val_true is not None else 0)),
+            "test_len": int(split_info.get("test_len") or (len(test_true) if test_true is not None else 0)),
+        },
+        "fit_status": "trained",
+        "epochs": int(((config.get("model_config") or {}).get("Informer") or {}).get("train_epochs", 0)),
+    }
+    artifacts["training_params"] = dict(training_params)
     test_forecast_df = data_blk.get("test_dense") if isinstance(data_blk.get("test_dense"), pd.DataFrame) else data_blk.get("test_result_df")
 
     return (
         val_true, val_forecast,
         test_true, test_forecast,
         final_model, test_forecast_df,
-        best_params
+        training_params
     )
 
 

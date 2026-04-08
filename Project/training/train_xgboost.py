@@ -114,8 +114,14 @@ def train_xgboost_model(df: pd.DataFrame, config: dict):
         test_true_u, test_pred_u, _ = clean_and_unify_arrays(test_true, test_pred)
         data_blk["val_dense"] = pd.DataFrame({"y_true": val_true_u, "yhat": val_pred_u})
         data_blk["test_dense"] = pd.DataFrame({"y_true": test_true_u, "yhat": test_pred_u})
-        params = {"model": "xgboost", "mode": "baseline_persistence", "features": []}
-        return val_true_u, val_pred_u, test_true_u, test_pred_u, None, None, params
+        training_params = {
+            "model": "xgboost",
+            "split": {"train_len": int(t_len), "val_len": int(v_len), "test_len": int(te_len)},
+            "fit_status": "baseline_persistence",
+            "features": [],
+        }
+        artifacts["training_params"] = dict(training_params)
+        return val_true_u, val_pred_u, test_true_u, test_pred_u, None, None, training_params
 
     X_all = _as_float_frame(work, feature_cols).to_numpy(dtype=np.float32)
 
@@ -197,8 +203,10 @@ def train_xgboost_model(df: pd.DataFrame, config: dict):
         except Exception:
             pass
 
-    params: Dict[str, Any] = {
+    training_params: Dict[str, Any] = {
         "model": "xgboost",
+        "split": {"train_len": int(t_len), "val_len": int(v_len), "test_len": int(te_len)},
+        "fit_status": "trained",
         "feature_cols": list(feature_cols),
         "early_stopping_rounds": early_stopping_rounds,
     }
@@ -216,10 +224,11 @@ def train_xgboost_model(df: pd.DataFrame, config: dict):
         "n_jobs",
     ):
         if k in mcfg:
-            params[k] = mcfg.get(k)
+            training_params[k] = mcfg.get(k)
     try:
-        params["best_iteration"] = int(getattr(model, "best_iteration", -1))
+        training_params["best_iteration"] = int(getattr(model, "best_iteration", -1))
     except Exception:
         pass
 
-    return val_true_u, val_pred_u, test_true_u, test_pred_u, model, None, params
+    artifacts["training_params"] = dict(training_params)
+    return val_true_u, val_pred_u, test_true_u, test_pred_u, model, None, training_params

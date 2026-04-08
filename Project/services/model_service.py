@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional
 
 from models.registry import FORECASTER_REGISTRY, TRAINER_REGISTRY
 from services import registry
+from models.registry import FORECASTER_REGISTRY, MODEL_REGISTRY, SUPPORTED_MODELS, TRAINER_REGISTRY
+from services.contract_utils import apply_hybrid_preset
 
 
 ALLOWED_STAGES = {"candidate", "production", "archived"}
@@ -87,14 +89,36 @@ def list_model_catalog() -> List[Dict[str, str]]:
     out: List[Dict[str, str]] = []
     for item in catalog:
         name = item["name"]
+def _is_forecastable(model_name: str) -> bool:
+    key = str(model_name or "").strip().lower()
+    if key in FORECASTER_REGISTRY:
+        return True
+    base, _residual, _alias = apply_hybrid_preset(key, None)
+    return str(base or "").strip().lower() in FORECASTER_REGISTRY
+
+
+def list_model_catalog() -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for item in SUPPORTED_MODELS:
+        name = str(item.get("name") or "").strip().lower()
         deps = item.get("deps") or []
         available, missing = _check_deps(deps)
+        listed = bool(item.get("listed", True))
+        trainable = name in TRAINER_REGISTRY
+        buildable = name in MODEL_REGISTRY
+        forecastable = _is_forecastable(name)
         out.append(
             {
                 "name": name,
                 "description": item["description"],
                 "trainer_key": name if name in TRAINER_REGISTRY else None,
                 "forecaster_key": name if name in FORECASTER_REGISTRY else None,
+                "name": str(item["name"]),
+                "description": str(item["description"]),
+                "listed": listed,
+                "trainable": trainable,
+                "buildable": buildable,
+                "forecastable": forecastable,
                 "available": available,
                 "missing_deps": missing or None,
             }

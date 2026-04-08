@@ -10,6 +10,8 @@ from utils.feature_contract import align_df_to_feature_contract
 from utils.feature_missing_policy import prepare_df_for_non_informer_models
 from utils.feature_selection import FeatureContract, save_feature_contract
 
+PREPROCESS_VERSION = "contract-v1"
+
 
 def build_train_features(
     df: pd.DataFrame,
@@ -43,6 +45,19 @@ def save_feature_contract_if_any(report: Dict[str, Any], artifacts: Dict[str, An
     if not isinstance(path, str) or not path:
         return
     try:
+        if isinstance(contract_dict, dict):
+            feature_order = [str(c) for c in (contract_dict.get("feature_cols") or []) if str(c).strip()]
+            required = [str(c) for c in (contract_dict.get("required_core_cols") or contract_dict.get("core_cols") or []) if str(c).strip()]
+            repairable = [str(c) for c in (contract_dict.get("repairable_core_cols") or contract_dict.get("recomputable_cols") or []) if str(c).strip()]
+            optional = [str(c) for c in (contract_dict.get("optional_cols") or []) if str(c).strip()]
+            if not optional and feature_order:
+                opt_set = [c for c in feature_order if c not in set(required) | set(repairable)]
+                optional = list(opt_set)
+            contract_dict["feature_order"] = list(feature_order)
+            contract_dict["required_core_cols"] = list(required)
+            contract_dict["repairable_core_cols"] = list(repairable)
+            contract_dict["optional_cols"] = list(optional)
+            contract_dict["preprocess_version"] = str(contract_dict.get("preprocess_version") or PREPROCESS_VERSION)
         # Try to serialize via FeatureContract helper if shape matches
         if isinstance(contract_dict, dict) and "feature_cols" in contract_dict:
             try:
@@ -65,6 +80,7 @@ def align_predict_df(
     time_col: str,
     value_col: str,
     tail_rows: Optional[int] = None,
+    allow_degrade: bool = False,
 ) -> Tuple[pd.DataFrame, Dict[str, Any], List[str]]:
     """
     Align incoming dataframe to a saved feature contract for predict-time:
@@ -83,5 +99,6 @@ def align_predict_df(
         contract=contract,
         recompute_policy="recompute",
         tail_rows=tail_rows,
+        allow_degrade=allow_degrade,
     )
     return aligned_df, report, usable_cols

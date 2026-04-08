@@ -45,3 +45,16 @@ groups:
         annotations:
           summary: "Degrade events above threshold"
           description: "Degrade rate exceeded 0.05 events/sec for 10 minutes."
+      - alert: HighDegradeRatio
+        expr: |
+          (
+            sum(increase(tsf_degrade_total[15m]))
+            /
+            clamp_min(sum(increase(predict_latency_seconds_count[15m])), 1)
+          ) > 0.15
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High degrade ratio"
+          description: "Degrade ratio over the last 15 minutes exceeds 15%."

@@ -50,6 +50,8 @@ class PredictRequest(BaseModel):
 class PredictResponse(BaseModel):
     status: str
     degraded: bool = False
+    degraded_reason: Optional[str] = None
+    fallback_model: Optional[str] = None
     reason: Optional[str] = None
     predictions: List[float]
     used_model: str
@@ -68,6 +70,8 @@ class TaskResponse(BaseModel):
     artifacts: Optional[dict] = None
     error: Optional[str] = None
     degraded: bool = False
+    degraded_reason: Optional[str] = None
+    fallback_model: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -111,5 +115,9 @@ class ModelInfo(BaseModel):
     description: str
     trainer_key: Optional[str] = None
     forecaster_key: Optional[str] = None
+    listed: bool = True
+    trainable: bool = False
+    buildable: bool = False
+    forecastable: bool = False
     available: bool = True
     missing_deps: Optional[List[str]] = None

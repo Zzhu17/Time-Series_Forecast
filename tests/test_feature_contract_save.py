@@ -54,3 +54,5 @@ def test_feature_contract_saved(tmp_path: Path):
 
     saved = json.loads(Path(artifacts["feature_cols_path"]).read_text(encoding="utf-8"))
     assert "feature_cols" in saved and "value" in saved["feature_cols"]
+    assert saved.get("feature_order") == saved.get("feature_cols")
+    assert isinstance(saved.get("preprocess_version"), str) and saved.get("preprocess_version")
