@@ -49,6 +49,8 @@ def test_xgboost_minimal_training_returns_7tuple():
     assert model is not None
     assert test_df is None
     assert isinstance(params, dict)
+    assert params.get("model") == "xgboost"
+    assert isinstance(params.get("split"), dict)
 
 
 def test_xgboost_missing_target_column_raises():

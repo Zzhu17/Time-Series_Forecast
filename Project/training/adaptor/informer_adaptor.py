@@ -9,6 +9,8 @@ def train_informer_model_7tuple(df, config):
     # 延迟导入，避免循环依赖
     from models.informer.train import train_informer_model
 
+    artifacts = config.setdefault("artifacts", {})
+
     # 原 informer 训练入口通常只吃 config，这里按你现状调用
     final_model, result_df = train_informer_model(config)
 
@@ -69,15 +71,26 @@ def train_informer_model_7tuple(df, config):
                         val_true, val_forecast = _extract_from_df(df_)
                         test_true, test_forecast = np.array([], dtype=float), np.array([], dtype=float)
 
-    # 最佳超参：Informer 若无调参可设 None（保持统一位置）
-    best_params = None
+    split_info = data_blk.get("split") if isinstance(data_blk.get("split"), dict) else {}
+    # 第7位固定 training_params(dict)
+    training_params = {
+        "model": "informer",
+        "split": {
+            "train_len": int(split_info.get("train_len") or max(0, len(df) - (len(val_true) if val_true is not None else 0) - (len(test_true) if test_true is not None else 0))),
+            "val_len": int(split_info.get("val_len") or (len(val_true) if val_true is not None else 0)),
+            "test_len": int(split_info.get("test_len") or (len(test_true) if test_true is not None else 0)),
+        },
+        "fit_status": "trained",
+        "epochs": int(((config.get("model_config") or {}).get("Informer") or {}).get("train_epochs", 0)),
+    }
+    artifacts["training_params"] = dict(training_params)
     test_forecast_df = data_blk.get("test_dense") if isinstance(data_blk.get("test_dense"), pd.DataFrame) else data_blk.get("test_result_df")
 
     return (
         val_true, val_forecast,
         test_true, test_forecast,
         final_model, test_forecast_df,
-        best_params
+        training_params
     )
 
 

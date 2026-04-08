@@ -47,7 +47,9 @@ def test_prophet_minimal_training_returns_7tuple():
     assert len(val_true) == len(val_pred)
     assert len(test_true) == len(test_pred)
     assert model is not None
-    assert params is None
+    assert isinstance(params, dict)
+    assert params.get("model") == "prophet"
+    assert isinstance(params.get("split"), dict)
 
 
 def test_prophet_invalid_input_raises():

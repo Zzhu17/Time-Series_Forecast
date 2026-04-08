@@ -106,8 +106,22 @@ def train_random_forest_model(df: pd.DataFrame, config):
         except Exception:
             pass
 
-    # 9) 将最优超参暴露到 artifacts，供 app 的“最佳超参”面板读取
-    arts["randomforest_params"] = best_params
+    split = {
+        "train_len": int(len(y_train)),
+        "val_len": int(len(y_val)),
+        "test_len": int(len(y_test)),
+    }
+    training_params = {
+        "model": "randomforest",
+        "split": split,
+        "fit_status": "trained",
+        "n_lags": int(n_lags),
+        **(best_params if isinstance(best_params, dict) else {}),
+    }
+
+    # 9) 将训练参数暴露到 artifacts，供 app 的“本次实际参数”面板读取
+    arts["randomforest_params"] = dict(training_params)
+    arts["training_params"] = dict(training_params)
 
     # 10) 构造 test_forecast_df（带时间索引，兼容 pipeline 连续绘图）
     test_forecast_df = None
@@ -127,7 +141,7 @@ def train_random_forest_model(df: pd.DataFrame, config):
         test_forecast_df = None
 
     final_model = model
-    return val_true, val_forecast, test_true, test_forecast, final_model, test_forecast_df, best_params
+    return val_true, val_forecast, test_true, test_forecast, final_model, test_forecast_df, training_params
 
 
 def get_forecaster():

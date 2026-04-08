@@ -51,7 +51,9 @@ def test_arima_minimal_training_returns_7tuple():
     assert isinstance(test_pred, np.ndarray)
     assert len(val_true) == len(val_pred)
     assert len(test_true) == len(test_pred)
-    assert isinstance(params, (dict, tuple, list, type(None)))
+    assert isinstance(params, dict)
+    assert params.get("model") == "arima"
+    assert isinstance(params.get("split"), dict)
 
 
 def test_arima_missing_target_column_raises():
