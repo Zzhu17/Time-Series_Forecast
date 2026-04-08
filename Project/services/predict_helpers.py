@@ -47,10 +47,44 @@ def load_feature_cols(artifacts: Optional[Dict[str, Any]]) -> List[str]:
         if isinstance(payload, (list, tuple)):
             return [str(c) for c in payload if str(c).strip()]
         if isinstance(payload, dict):
+            ordered = payload.get("feature_order")
+            if isinstance(ordered, (list, tuple)):
+                cols = [str(c) for c in ordered if str(c).strip()]
+                if cols:
+                    return cols
             inner = payload.get("feature_cols")
             if isinstance(inner, (list, tuple)):
                 return [str(c) for c in inner if str(c).strip()]
     return []
+
+
+def validate_contract_snapshot(
+    df: pd.DataFrame,
+    *,
+    feature_cols: List[str],
+    time_col: str,
+) -> Dict[str, Any]:
+    incoming = [str(c) for c in df.columns if str(c) != time_col]
+    expected = [str(c) for c in feature_cols if str(c) != time_col]
+    report = {
+        "missing_columns": sorted([c for c in expected if c not in incoming]),
+        "extra_columns": sorted([c for c in incoming if c not in expected]),
+        "order_mismatch": [],
+        "type_cast_failed": [],
+    }
+    if incoming != expected:
+        report["order_mismatch"] = [
+            {"expected_index": i, "expected": exp, "actual": incoming[i] if i < len(incoming) else None}
+            for i, exp in enumerate(expected)
+            if i >= len(incoming) or incoming[i] != exp
+        ]
+    for c in expected:
+        if c in df.columns:
+            s = df[c]
+            casted = pd.to_numeric(s, errors="coerce")
+            if bool(s.notna().any() and casted.isna().all()):
+                report["type_cast_failed"].append(c)
+    return report
 
 
 def load_pickle(path: str) -> Any:
@@ -92,6 +126,7 @@ def prepare_feature_frame(
     tail_rows: Optional[int] = None,
     tail_only: bool = False,
     allow_nan: bool = False,
+    allow_degrade: bool = False,
 ) -> pd.DataFrame:
     if not isinstance(df, pd.DataFrame) or df.empty:
         raise ValueError("empty dataframe")
@@ -107,6 +142,15 @@ def prepare_feature_frame(
     if any(c in safe_time_features() for c in feature_cols):
         work = ensure_calendar_features(work, time_col=time_col)
 
+    contract_diff = validate_contract_snapshot(work, feature_cols=feature_cols, time_col=time_col)
+    has_diff = bool(
+        contract_diff["missing_columns"]
+        or contract_diff["order_mismatch"]
+        or contract_diff["type_cast_failed"]
+    )
+    if has_diff and not allow_degrade:
+        raise ValueError(f"feature contract validation failed: {contract_diff}")
+
     missing = []
     for c in feature_cols:
         if c == time_col:
@@ -119,7 +163,9 @@ def prepare_feature_frame(
             continue
         missing.append(c)
     if missing:
-        raise KeyError(f"missing features: {sorted(set(missing))}")
+        if not allow_degrade:
+            raise KeyError(f"missing features: {sorted(set(missing))}")
+        feature_cols = [c for c in feature_cols if c not in set(missing)]
 
     cols = [c for c in feature_cols if c != time_col]
     if not cols:
