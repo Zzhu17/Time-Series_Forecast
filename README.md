@@ -109,6 +109,13 @@ This repo includes minimal package metadata in `pyproject.toml` and uses `VERSIO
   - Override: set `DATABASE_URL` (e.g., `postgresql://user:pass@host:5432/dbname`) and ensure driver installed (`psycopg[binary]` for Postgres)
 - Logging: API/tasks emit JSON logs (logger name `ts-forecast`) with trace_id/task_id/duration where applicable.
 - Metrics: see `monitoring/alerts.yaml` for basic alert rules.
+- Training quality gate:
+  - Every training run now performs a gate check before registry write.
+  - Default threshold: `test.nrmse <= 1.0` (override via `TRAINING_GATE_MAX_NRMSE`).
+  - Degraded runs or missing metrics fail the gate and are stored as `archived` instead of `candidate`.
+- Traceability:
+  - Every run persists `training_params.json` under `artifacts/runs/<run_id>/`.
+  - Registry params include `training_params` + `quality_gate` so catalog/registry/trainer semantics stay aligned.
 - Async tasks: set `CELERY_ENABLED=1` plus Redis URLs (`CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`) to enqueue training via Celery.
   - Docker default uses `redis://redis:6379/0`; local runs should use `redis://localhost:6379/0`.
 
@@ -161,6 +168,7 @@ Grafana dashboard:
 Prometheus alerts:
 - Rules live at `monitoring/alerts.yaml`
 - Alertmanager config: `monitoring/alertmanager.yml` (webhook -> `/alerts`)
+- Includes `DegradeRateHigh` threshold alert based on `degrade_events_total`.
 
 ## Terraform (IaC skeleton)
 

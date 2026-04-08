@@ -81,6 +81,11 @@ def train_informer_model_7tuple(df, config):
                         val_true, val_forecast = _extract_from_df(df_)
                         test_true, test_forecast = np.array([], dtype=float), np.array([], dtype=float)
 
+    # 统一返回 training_params，便于注册/落盘追踪
+    best_params = {
+        "model_name": "informer",
+        "trainer": "informer_adaptor",
+    }
     split_info = data_blk.get("split") if isinstance(data_blk.get("split"), dict) else {}
     # 第7位固定 training_params(dict)
     training_params = {

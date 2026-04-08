@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 from typing import Any, Dict, List, Optional
 
+from models.registry import FORECASTER_REGISTRY, TRAINER_REGISTRY
 from services import registry
 from models.registry import FORECASTER_REGISTRY, MODEL_REGISTRY, SUPPORTED_MODELS, TRAINER_REGISTRY
 from services.contract_utils import apply_hybrid_preset
@@ -36,6 +37,58 @@ def _check_deps(deps: List[str]) -> tuple[bool, List[str]]:
     return (len(missing) == 0), missing
 
 
+def list_model_catalog() -> List[Dict[str, str]]:
+    catalog = [
+        {
+            "name": "baseline",
+            "description": "Naive last-value persistence.",
+            "deps": [],
+        },
+        {
+            "name": "informer",
+            "description": "Transformer forecaster (requires torch).",
+            "deps": ["torch"],
+        },
+        {
+            "name": "lstm",
+            "description": "LSTM forecaster (requires torch).",
+            "deps": ["torch"],
+        },
+        {
+            "name": "xgboost",
+            "description": "Gradient boosting regressor (requires xgboost).",
+            "deps": ["xgboost"],
+        },
+        {
+            "name": "randomforest",
+            "description": "Random forest regressor (requires scikit-learn).",
+            "deps": ["sklearn"],
+        },
+        {
+            "name": "arima",
+            "description": "Auto ARIMA (requires pmdarima).",
+            "deps": ["pmdarima"],
+        },
+        {
+            "name": "prophet",
+            "description": "Prophet forecaster (requires prophet).",
+            "deps": ["prophet"],
+        },
+        {
+            "name": "xgboost+informer",
+            "description": "Informer forecast + XGBoost residual correction.",
+            "deps": ["torch", "xgboost"],
+        },
+        {
+            "name": "xgboost+lstm",
+            "description": "LSTM forecast + XGBoost residual correction.",
+            "deps": ["torch", "xgboost"],
+        },
+    ]
+
+    out: List[Dict[str, str]] = []
+    for item in catalog:
+        name = item["name"]
 def _is_forecastable(model_name: str) -> bool:
     key = str(model_name or "").strip().lower()
     if key in FORECASTER_REGISTRY:
@@ -56,6 +109,10 @@ def list_model_catalog() -> List[Dict[str, Any]]:
         forecastable = _is_forecastable(name)
         out.append(
             {
+                "name": name,
+                "description": item["description"],
+                "trainer_key": name if name in TRAINER_REGISTRY else None,
+                "forecaster_key": name if name in FORECASTER_REGISTRY else None,
                 "name": str(item["name"]),
                 "description": str(item["description"]),
                 "listed": listed,

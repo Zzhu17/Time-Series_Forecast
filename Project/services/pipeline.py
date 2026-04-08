@@ -512,6 +512,9 @@ def run_train_predict_pipeline(config):
         else:
             raise ValueError(f"Unsupported model '{model_key}'")
         _progress(0.80, "postprocess predictions")
+        if not isinstance(params, dict):
+            params = {"raw_params": params}
+        params.setdefault("model_name", model_key)
         artifacts[f"{model_key}_params"] = params
         if isinstance(params, dict):
             artifacts["training_params"] = dict(params)

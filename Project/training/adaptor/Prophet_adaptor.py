@@ -9,6 +9,16 @@ def train_prophet_model_7tuple(df, config):
 
     out = train_prophet_model(df, config)
 
+    # If the original trainer already returns a 7-tuple, pass it through directly.
+    if isinstance(out, tuple) and len(out) == 7:
+        val_true, val_forecast, test_true, test_forecast, final_model, test_forecast_df, best_params = out
+        if not isinstance(best_params, dict):
+            best_params = {
+                "model_name": "prophet",
+                "trainer": "prophet_adaptor",
+                "raw_params": best_params,
+            }
+        return (val_true, val_forecast, test_true, test_forecast, final_model, test_forecast_df, best_params)
     artifacts = config.setdefault("artifacts", {})
 
     def _to_training_params(raw_params, train_len=0, val_len=0, test_len=0):
@@ -42,6 +52,10 @@ def train_prophet_model_7tuple(df, config):
 
     val_true = val_forecast = test_true = test_forecast = None
     test_forecast_df = None
+    best_params = {
+        "model_name": "prophet",
+        "trainer": "prophet_adaptor",
+    }
     training_params = {"model": "prophet"}  # Prophet 通常不调参
 
     if isinstance(result_df, pd.DataFrame) and {"y_true", "yhat"} <= set(result_df.columns):

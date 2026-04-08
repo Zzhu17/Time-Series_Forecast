@@ -6,6 +6,7 @@ import json
 import shutil
 import os
 import time
+import math
 
 import pandas as pd
 
@@ -27,6 +28,48 @@ def _artifact_dir_for_task(task_id: str) -> Path:
 
 def _artifact_root() -> Path:
     return Path(__file__).resolve().parents[2] / "artifacts" / "runs"
+
+
+def _safe_float(val: Any) -> Optional[float]:
+    try:
+        f = float(val)
+    except Exception:
+        return None
+    if not math.isfinite(f):
+        return None
+    return f
+
+
+def _extract_primary_nrmse(metrics: Dict[str, Any]) -> Optional[float]:
+    if not isinstance(metrics, dict):
+        return None
+    for key in ("test", "validation"):
+        blk = metrics.get(key)
+        if isinstance(blk, dict):
+            score = _safe_float(blk.get("nrmse"))
+            if score is not None:
+                return score
+    return _safe_float(metrics.get("nrmse"))
+
+
+def evaluate_training_gate(*, metrics: Dict[str, Any], degraded: bool) -> Dict[str, Any]:
+    threshold = _safe_float(os.getenv("TRAINING_GATE_MAX_NRMSE", "1.0"))
+    if threshold is None:
+        threshold = 1.0
+    nrmse = _extract_primary_nrmse(metrics)
+    checks = {
+        "not_degraded": not bool(degraded),
+        "nrmse_available": nrmse is not None,
+        "nrmse_within_threshold": (nrmse is not None and nrmse <= threshold),
+    }
+    passed = all(checks.values())
+    failed = [name for name, ok in checks.items() if not ok]
+    return {
+        "passed": passed,
+        "failed_checks": failed,
+        "thresholds": {"max_nrmse": threshold},
+        "observed": {"nrmse": nrmse, "degraded": bool(degraded)},
+    }
 
 
 def _purge_old_runs(current_run_id: str, keep: int = 1) -> None:
@@ -67,6 +110,13 @@ def _write_latest_report(run_id: str, artifacts: Dict[str, Any]) -> None:
         json.dumps(meta, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def _persist_training_params(task_id: str, training_params: Dict[str, Any]) -> str:
+    run_dir = _artifact_dir_for_task(task_id)
+    out_path = run_dir / "training_params.json"
+    out_path.write_text(json.dumps(training_params, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(out_path)
 
 
 def _model_filename(model_name: str) -> str:
@@ -304,9 +354,18 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
             "residual_modeling": residual_modeling,
             "contract_report": contract_report,
         }
+        trainer_params = artifacts.get(f"{str(model_name).lower()}_params") if isinstance(artifacts, dict) else None
+        params["training_params"] = trainer_params if isinstance(trainer_params, dict) else {}
+        gate = evaluate_training_gate(metrics=metrics if isinstance(metrics, dict) else {}, degraded=degraded)
+        params["quality_gate"] = gate
+        params["gate_passed"] = bool(gate.get("passed", False))
+        if isinstance(artifacts, dict):
+            artifacts["training_params_path"] = _persist_training_params(task_id, params["training_params"])
+            artifacts["quality_gate"] = gate
         model_record = register_model(
             name=str(model_alias or model_name),
             version=task_id,
+            stage="candidate" if bool(gate.get("passed", False)) else "archived",
             stage=model_stage,
             params=params,
             metrics=metrics,
@@ -339,6 +398,12 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
         raise
     finally:
         if emit_metrics:
+            if status == "success":
+                try:
+                    if "degraded" in locals() and bool(degraded):
+                        observe_degrade(stage="train", model=model_name, reason=str(degraded_reason or "degraded"))
+                except Exception:
+                    pass
             observe_task(
                 task_type="train",
                 model=model_name,

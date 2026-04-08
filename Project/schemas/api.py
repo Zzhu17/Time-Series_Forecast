@@ -113,6 +113,8 @@ class ModelResponse(BaseModel):
 class ModelInfo(BaseModel):
     name: str
     description: str
+    trainer_key: Optional[str] = None
+    forecaster_key: Optional[str] = None
     listed: bool = True
     trainable: bool = False
     buildable: bool = False

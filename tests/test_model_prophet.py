@@ -49,6 +49,7 @@ def test_prophet_minimal_training_returns_7tuple():
     assert len(test_true) == len(test_pred)
     assert model is not None
     assert isinstance(params, dict)
+    assert params.get("model_name") == "prophet"
     assert params.get("model") == "prophet"
     assert isinstance(params.get("split"), dict)
 

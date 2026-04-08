@@ -42,6 +42,10 @@ if _ENABLED:
         ["model"],
         buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5),
     )
+    DEGRADE_EVENTS = Counter(
+        "degrade_events_total",
+        "Count of degraded runs/predictions",
+        ["stage", "model", "reason"],
     TSF_DEGRADE_TOTAL = Counter(
         "tsf_degrade_total",
         "Total degraded predictions/trainings",
@@ -53,6 +57,7 @@ else:  # pragma: no cover
     TASK_DURATION = None
     TASK_FAILURES = None
     PREDICT_LATENCY = None
+    DEGRADE_EVENTS = None
     TSF_DEGRADE_TOTAL = None
 
 
@@ -95,6 +100,12 @@ def observe_predict(*, model: Optional[str], duration: float) -> None:
     PREDICT_LATENCY.labels(model=model_name).observe(max(0.0, float(duration)))
 
 
+def observe_degrade(*, stage: str, model: Optional[str], reason: Optional[str]) -> None:
+    if not _ENABLED:
+        return
+    model_name = model or "unknown"
+    reason_name = (reason or "unspecified").strip()[:64] or "unspecified"
+    DEGRADE_EVENTS.labels(stage=stage, model=model_name, reason=reason_name).inc()
 def normalize_degrade_reason(reason: Optional[str]) -> str:
     raw_reason = str(reason or "").strip().lower()
     if not raw_reason:
