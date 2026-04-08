@@ -148,6 +148,7 @@ async def train_file_sync(
     payload_out["task_model"] = model_name
     payload_out["run_id"] = task_id
     payload_out["model_record"] = result.get("model_record") if isinstance(result, dict) else None
+    payload_out["training_params"] = result.get("training_params") if isinstance(result, dict) else None
     return payload_out
 
 
@@ -199,4 +200,5 @@ async def train_file_streamlit(
     payload_out["task_model"] = model_name
     payload_out["run_id"] = task_id
     payload_out["model_record"] = result.get("model_record") if isinstance(result, dict) else None
+    payload_out["training_params"] = result.get("training_params") if isinstance(result, dict) else None
     return payload_out

@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from models.registry import FORECASTER_REGISTRY, TRAINER_REGISTRY
 from services import registry
+from models.registry import MODEL_CATALOG
 from models.registry import FORECASTER_REGISTRY, MODEL_REGISTRY, SUPPORTED_MODELS, TRAINER_REGISTRY
 from services.contract_utils import apply_hybrid_preset
 
@@ -38,55 +39,8 @@ def _check_deps(deps: List[str]) -> tuple[bool, List[str]]:
 
 
 def list_model_catalog() -> List[Dict[str, str]]:
-    catalog = [
-        {
-            "name": "baseline",
-            "description": "Naive last-value persistence.",
-            "deps": [],
-        },
-        {
-            "name": "informer",
-            "description": "Transformer forecaster (requires torch).",
-            "deps": ["torch"],
-        },
-        {
-            "name": "lstm",
-            "description": "LSTM forecaster (requires torch).",
-            "deps": ["torch"],
-        },
-        {
-            "name": "xgboost",
-            "description": "Gradient boosting regressor (requires xgboost).",
-            "deps": ["xgboost"],
-        },
-        {
-            "name": "randomforest",
-            "description": "Random forest regressor (requires scikit-learn).",
-            "deps": ["sklearn"],
-        },
-        {
-            "name": "arima",
-            "description": "Auto ARIMA (requires pmdarima).",
-            "deps": ["pmdarima"],
-        },
-        {
-            "name": "prophet",
-            "description": "Prophet forecaster (requires prophet).",
-            "deps": ["prophet"],
-        },
-        {
-            "name": "xgboost+informer",
-            "description": "Informer forecast + XGBoost residual correction.",
-            "deps": ["torch", "xgboost"],
-        },
-        {
-            "name": "xgboost+lstm",
-            "description": "LSTM forecast + XGBoost residual correction.",
-            "deps": ["torch", "xgboost"],
-        },
-    ]
-
     out: List[Dict[str, str]] = []
+    for name, item in MODEL_CATALOG.items():
     for item in catalog:
         name = item["name"]
 def _is_forecastable(model_name: str) -> bool:

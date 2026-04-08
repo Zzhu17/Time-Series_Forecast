@@ -18,6 +18,20 @@ from services.training_payloads import normalize_training_payload
 from utils.metrics import observe_degrade, observe_task
 
 
+def _training_params_summary(normalized: Dict[str, Any], *, task_id: str) -> Dict[str, Any]:
+    return {
+        "run_id": task_id,
+        "model_name": normalized.get("model_name"),
+        "model_alias": normalized.get("model_alias"),
+        "time_col": normalized.get("time_col"),
+        "value_col": normalized.get("value_col"),
+        "feature_cols": list(normalized.get("feature_cols") or []),
+        "device": normalized.get("device", "cpu"),
+        "allow_degrade": bool(normalized.get("allow_degrade", False)),
+        "residual_modeling": normalized.get("residual_modeling"),
+    }
+
+
 def _artifact_dir_for_task(task_id: str) -> Path:
     project_dir = Path(__file__).resolve().parents[2]
     art_root = project_dir / "artifacts" / "runs"
@@ -335,9 +349,21 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
 
         metrics = results.get("metrics", {}) if isinstance(results, dict) else {}
         artifacts = results.get("artifacts", {}) if isinstance(results, dict) else {}
+        artifacts = artifacts if isinstance(artifacts, dict) else {}
         data = results.get("data", {}) if isinstance(results, dict) else {}
         degraded = bool(data.get("degraded", False))
         degraded_reason = data.get("degraded_reason")
+        training_params = _training_params_summary(normalized, task_id=task_id)
+        artifacts["training_params"] = training_params
+        try:
+            run_dir = artifacts.get("run_dir")
+            if isinstance(run_dir, str) and run_dir:
+                p = Path(run_dir) / "training_params.json"
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(json.dumps(training_params, ensure_ascii=False, indent=2), encoding="utf-8")
+                artifacts["training_params_path"] = str(p)
+        except Exception:
+            pass
         gate_failed_reason = _evaluate_quality_gate(config, metrics)
         model_stage = "archived" if gate_failed_reason else "candidate"
         fallback_model = data.get("degraded_mode") if degraded else None
@@ -353,6 +379,7 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
             "feature_cols": feature_cols,
             "residual_modeling": residual_modeling,
             "contract_report": contract_report,
+            "training_params": training_params,
         }
         trainer_params = artifacts.get(f"{str(model_name).lower()}_params") if isinstance(artifacts, dict) else None
         params["training_params"] = trainer_params if isinstance(trainer_params, dict) else {}
@@ -392,6 +419,7 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
             "model_record": model_record,
             "results": results,
             "cacheable_results": snap_results,
+            "training_params": training_params,
         }
     except Exception:
         status = "failed"

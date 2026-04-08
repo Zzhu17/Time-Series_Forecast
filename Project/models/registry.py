@@ -59,6 +59,19 @@ FORECASTER_REGISTRY = {
     "xgboost": _lazy("training.adaptor.xgboost_adaptor", "get_forecaster", install_hint="pip install xgboost"),
 }
 
+MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
+    "baseline": {"description": "Naive last-value persistence.", "deps": []},
+    "informer": {"description": "Transformer forecaster (requires torch).", "deps": ["torch"]},
+    "lstm": {"description": "LSTM forecaster (requires torch).", "deps": ["torch"]},
+    "xgboost": {"description": "Gradient boosting regressor (requires xgboost).", "deps": ["xgboost"]},
+    "randomforest": {"description": "Random forest regressor (requires scikit-learn).", "deps": ["sklearn"]},
+    "arima": {"description": "Auto ARIMA (requires pmdarima).", "deps": ["pmdarima"]},
+    "prophet": {"description": "Prophet forecaster (requires prophet).", "deps": ["prophet"]},
+    "xgboost+informer": {"description": "Informer forecast + XGBoost residual correction.", "deps": ["torch", "xgboost"]},
+    "xgboost+lstm": {"description": "LSTM forecast + XGBoost residual correction.", "deps": ["torch", "xgboost"]},
+}
+
+__all__ = ("MODEL_REGISTRY", "TRAINER_REGISTRY", "FORECASTER_REGISTRY", "MODEL_CATALOG")
 SUPPORTED_MODELS: List[Dict[str, Any]] = [
     {
         "name": "baseline",

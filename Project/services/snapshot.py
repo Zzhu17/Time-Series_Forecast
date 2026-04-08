@@ -200,6 +200,7 @@ def cacheable_results(results: dict) -> dict:
         "feature_cols",
         "target_idx",
         "training_params",
+        "training_params_path",
     ):
         if k in arts:
             arts_keep[k] = arts.get(k)

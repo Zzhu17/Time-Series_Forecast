@@ -1,6 +1,8 @@
 # training/adaptor/lstm_adaptor.py
 from __future__ import annotations
 import pandas as pd
+import random
+import numpy as np
 
 from training.train_lstm import train_lstm_model
 from utils.array_utils import clean_dataframe
@@ -113,9 +115,17 @@ def train_lstm_model_7tuple(df: pd.DataFrame, config: dict):
     config.setdefault("data", {})
     config["data"].setdefault("df", df.copy())
     config["data"].setdefault("dataframe", df.copy())
+    seed = int(config.get("seed", config.get("default", {}).get("seed", 42)) or 42)
+    random.seed(seed)
+    np.random.seed(seed)
+    arts = config.setdefault("artifacts", {})
+    arts["training_meta"] = {"model": "lstm", "seed": seed, "smoke_mode": bool(config.get("smoke_mode", False))}
 
     # 4) 直接调用新 LSTM 训练（单次即可获得 val/test 结果）
     cfg_for_train = _build_subconfig_for_train(config, time_col, value_col, hparams)
+    if bool(config.get("smoke_mode", False)):
+        cfg_for_train["epochs"] = min(int(cfg_for_train.get("epochs", 1)), 1)
+    return train_lstm_model(df, cfg_for_train)
     out = train_lstm_model(df, cfg_for_train)
     if not (isinstance(out, tuple) and len(out) == 7):
         raise ValueError("train_lstm_model must return 7-tuple")

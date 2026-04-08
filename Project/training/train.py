@@ -1,3 +1,4 @@
+"""Legacy training module kept as compatibility shim for imports."""
 """Deprecated training entrypoint.
 
 This module is kept only for backward compatibility and should not be used as
