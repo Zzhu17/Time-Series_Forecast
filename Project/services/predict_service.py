@@ -22,7 +22,7 @@ from utils.feature_contract import (
 )
 from utils.feature_pipeline import align_predict_df
 from utils.feature_selection import load_feature_contract
-from utils.metrics import observe_predict
+from utils.metrics import observe_degrade, observe_predict
 from utils.target_transform import inverse_transform_array
 from models.registry import FORECASTER_REGISTRY
 
@@ -48,6 +48,17 @@ def _find_model_record(
 
 class PredictionNotFoundError(Exception):
     pass
+
+
+def _infer_fallback_model(*, degraded: bool, used_model: str, default_model: str) -> Optional[str]:
+    if not degraded:
+        return None
+    token = str(used_model or "").strip().lower()
+    if "->" in token:
+        return token.split("->")[-1].strip() or default_model
+    if token and token != default_model:
+        return token
+    return default_model
 
 
 def _file_mtime(path: str) -> float:
@@ -732,8 +743,10 @@ def run_prediction(payload: Dict[str, Any]) -> Dict[str, Any]:
                         "status": "ok",
                         "predictions": np.asarray(preds, dtype=float).reshape(-1).tolist(),
                         "degraded": False,
-                        "reason": None,
+                        "degraded_reason": None,
+                        "fallback_model": None,
                         "used_model": model,
+                        "reason": None,
                         "contract_report": contract_report,
                     }
             except Exception:
@@ -745,8 +758,10 @@ def run_prediction(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "status": "ok",
                 "predictions": preds.tolist(),
                 "degraded": False,
-                "reason": None,
+                "degraded_reason": None,
+                "fallback_model": None,
                 "used_model": "baseline",
+                "reason": None,
                 "contract_report": contract_report,
             }
 
@@ -781,22 +796,30 @@ def run_prediction(payload: Dict[str, Any]) -> Dict[str, Any]:
                     used_model = f"{model}->baseline"
                     reason = "model_not_available"
 
+            fallback_model = _infer_fallback_model(degraded=bool(degraded), used_model=str(used_model), default_model="baseline")
+            if degraded:
+                observe_degrade(model=used_model or model, reason=reason)
             return {
                 "status": "ok",
                 "predictions": preds.tolist(),
                 "degraded": bool(degraded),
-                "reason": reason or None,
+                "degraded_reason": reason or None,
+                "fallback_model": fallback_model,
                 "used_model": used_model,
+                "reason": reason or None,
                 "contract_report": contract_report,
             }
 
         preds = baseline_predict(df, value_col, horizon)
+        observe_degrade(model=model, reason="model_not_supported")
         return {
             "status": "ok",
             "predictions": preds.tolist(),
             "degraded": True,
-            "reason": "model_not_supported",
+            "degraded_reason": "model_not_supported",
+            "fallback_model": "baseline",
             "used_model": f"{model}->baseline",
+            "reason": "model_not_supported",
             "contract_report": contract_report,
         }
     finally:

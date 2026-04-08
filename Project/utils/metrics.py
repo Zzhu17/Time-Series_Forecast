@@ -42,12 +42,18 @@ if _ENABLED:
         ["model"],
         buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5),
     )
+    TSF_DEGRADE_TOTAL = Counter(
+        "tsf_degrade_total",
+        "Total degraded predictions/trainings",
+        ["model", "reason"],
+    )
 else:  # pragma: no cover
     HTTP_REQUESTS = None
     HTTP_LATENCY = None
     TASK_DURATION = None
     TASK_FAILURES = None
     PREDICT_LATENCY = None
+    TSF_DEGRADE_TOTAL = None
 
 
 def metrics_enabled() -> bool:
@@ -87,3 +93,11 @@ def observe_predict(*, model: Optional[str], duration: float) -> None:
         return
     model_name = model or "unknown"
     PREDICT_LATENCY.labels(model=model_name).observe(max(0.0, float(duration)))
+
+
+def observe_degrade(*, model: Optional[str], reason: Optional[str]) -> None:
+    if not _ENABLED:
+        return
+    model_name = model or "unknown"
+    degrade_reason = str(reason or "unknown")[:120]
+    TSF_DEGRADE_TOTAL.labels(model=model_name, reason=degrade_reason).inc()
