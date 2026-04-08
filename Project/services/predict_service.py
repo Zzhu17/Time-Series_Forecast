@@ -43,7 +43,10 @@ def _find_model_record(
             if str(rec.get("version", "")).lower() == str(model_version).lower():
                 return rec
         return None
-    return latest_model_for_name(model_name)
+    candidate = latest_model_for_name(model_name, stage="candidate")
+    if candidate is not None:
+        return candidate
+    return latest_model_for_name(model_name, stage="production")
 
 
 class PredictionNotFoundError(Exception):
