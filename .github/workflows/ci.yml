@@ -25,6 +25,8 @@ jobs:
         run: PYTHONPATH=Project mypy Project tests
       - name: Tests
         run: PYTHONPATH=Project pytest -q tests
+      - name: Model tests
+        run: make test-models
       - name: Verify tag matches VERSION
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
