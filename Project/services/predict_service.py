@@ -22,7 +22,7 @@ from utils.feature_contract import (
 )
 from utils.feature_pipeline import align_predict_df
 from utils.feature_selection import load_feature_contract
-from utils.metrics import observe_degrade, observe_predict
+from utils.metrics import normalize_degrade_reason, observe_degrade, observe_predict
 from utils.target_transform import inverse_transform_array
 from models.registry import FORECASTER_REGISTRY
 
@@ -798,7 +798,7 @@ def run_prediction(payload: Dict[str, Any]) -> Dict[str, Any]:
 
             fallback_model = _infer_fallback_model(degraded=bool(degraded), used_model=str(used_model), default_model="baseline")
             if degraded:
-                observe_degrade(model=used_model or model, reason=reason)
+                observe_degrade(model=used_model or model, reason=normalize_degrade_reason(reason))
             return {
                 "status": "ok",
                 "predictions": preds.tolist(),

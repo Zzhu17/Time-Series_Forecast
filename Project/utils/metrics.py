@@ -95,9 +95,34 @@ def observe_predict(*, model: Optional[str], duration: float) -> None:
     PREDICT_LATENCY.labels(model=model_name).observe(max(0.0, float(duration)))
 
 
+def normalize_degrade_reason(reason: Optional[str]) -> str:
+    raw_reason = str(reason or "").strip().lower()
+    if not raw_reason:
+        return "unknown"
+    if "model_not_supported" in raw_reason:
+        return "model_not_supported"
+    if "model_not_available" in raw_reason:
+        return "model_not_available"
+    if "multi_step_not_supported" in raw_reason:
+        return "multi_step_not_supported"
+    if "required_core_missing" in raw_reason:
+        return "required_core_missing"
+    if "non_informer_one_step_only" in raw_reason:
+        return "non_informer_one_step_only"
+    if "inverse_target_failed" in raw_reason:
+        return "inverse_target_failed"
+    if "residual_skipped" in raw_reason:
+        return "residual_skipped"
+    if "feature contract" in raw_reason:
+        return "feature_contract_fallback"
+    if "fallback" in raw_reason:
+        return "fallback_error"
+    return "other"
+
+
 def observe_degrade(*, model: Optional[str], reason: Optional[str]) -> None:
     if not _ENABLED:
         return
     model_name = model or "unknown"
-    degrade_reason = str(reason or "unknown")[:120]
+    degrade_reason = normalize_degrade_reason(reason)
     TSF_DEGRADE_TOTAL.labels(model=model_name, reason=degrade_reason).inc()
