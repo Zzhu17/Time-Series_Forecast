@@ -513,6 +513,8 @@ def run_train_predict_pipeline(config):
             raise ValueError(f"Unsupported model '{model_key}'")
         _progress(0.80, "postprocess predictions")
         artifacts[f"{model_key}_params"] = params
+        if isinstance(params, dict):
+            artifacts["training_params"] = dict(params)
         # Ensure RF best params are exposed under a stable key for the app panel
         if model_key == "randomforest":
             artifacts["randomforest_params"] = params
@@ -1437,6 +1439,7 @@ def run_pipeline_and_update_state(
         else:
             err_stage, err_action = _infer_error_stage_and_action(e, default_stage="train")
             results = _build_error_payload(e, stage=err_stage, action=err_action)
+            results = _build_error_payload(e, stage="train", action="fail")
 
     # Strip heavy objects and keep artifacts safe
     strip_heavy_inplace(config)

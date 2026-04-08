@@ -116,7 +116,22 @@ def train_lstm_model_7tuple(df: pd.DataFrame, config: dict):
 
     # 4) 直接调用新 LSTM 训练（单次即可获得 val/test 结果）
     cfg_for_train = _build_subconfig_for_train(config, time_col, value_col, hparams)
-    return train_lstm_model(df, cfg_for_train)
+    out = train_lstm_model(df, cfg_for_train)
+    if not (isinstance(out, tuple) and len(out) == 7):
+        raise ValueError("train_lstm_model must return 7-tuple")
+
+    val_true, val_pred, test_true, test_pred, final_model, test_forecast_df, raw_params = out
+    v_len = int(len(val_true)) if val_true is not None else 0
+    te_len = int(len(test_true)) if test_true is not None else 0
+    tr_len = max(0, int(len(df)) - v_len - te_len)
+    training_params = {
+        "model": "lstm",
+        "split": {"train_len": tr_len, "val_len": v_len, "test_len": te_len},
+        "fit_status": "trained",
+        **(raw_params if isinstance(raw_params, dict) else {}),
+    }
+    config.setdefault("artifacts", {})["training_params"] = dict(training_params)
+    return val_true, val_pred, test_true, test_pred, final_model, test_forecast_df, training_params
 
 
 def get_forecaster():

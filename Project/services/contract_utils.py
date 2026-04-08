@@ -7,6 +7,8 @@ import pandas as pd
 from schemas.contract import FeatureContractReport
 from utils.feature_contract import is_recomputable_name, parse_recompute_name, safe_time_features
 
+FEATURE_PREPROCESS_VERSION = "contract-v1"
+
 _HYBRID_PRESETS = {
     "xgboost+lstm": {
         "base": "lstm",
@@ -180,6 +182,10 @@ def build_feature_contract_report(
         raise ValueError(f"feature_cols missing in data: {sorted(set(missing_feature_cols))}")
 
     extra_columns = [c for c in df_cols if c not in feature_cols and c != time_col]
+    required_core_cols = [c for c in feature_cols if c == value_col]
+    repairable_core_cols = [c for c in feature_cols if c in safe_time_features() or is_recomputable_name(c)]
+    optional_cols = [c for c in feature_cols if c not in set(required_core_cols) | set(repairable_core_cols)]
+
     payload = {
         "feature_cols": list(feature_cols),
         "missing_required_cols": [],
@@ -188,6 +194,11 @@ def build_feature_contract_report(
         "duplicate_features": [],
         "invalid_features": [],
         "extra_columns": sorted(set(extra_columns)),
+        "required_core_cols": list(required_core_cols),
+        "repairable_core_cols": list(repairable_core_cols),
+        "optional_cols": list(optional_cols),
+        "feature_order": list(feature_cols),
+        "preprocess_version": FEATURE_PREPROCESS_VERSION,
     }
     if isinstance(normalize_report, dict):
         for key in ("duplicate_features", "invalid_features"):

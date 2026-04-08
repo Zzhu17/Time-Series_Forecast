@@ -56,7 +56,9 @@ def test_informer_minimal_training_returns_7tuple(monkeypatch: pytest.MonkeyPatc
     assert len(val_true) == len(val_pred)
     assert len(test_true) == len(test_pred)
     assert model is not None
-    assert params is None
+    assert isinstance(params, dict)
+    assert params.get("model") == "informer"
+    assert isinstance(params.get("split"), dict)
 
 
 def test_informer_missing_prediction_columns_degrades(monkeypatch: pytest.MonkeyPatch):

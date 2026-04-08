@@ -199,6 +199,7 @@ def cacheable_results(results: dict) -> dict:
         "feature_missing_report",
         "feature_cols",
         "target_idx",
+        "training_params",
     ):
         if k in arts:
             arts_keep[k] = arts.get(k)
@@ -338,6 +339,7 @@ def safe_artifacts_from_config(cfg: dict) -> dict:
         "residual_model_type",
         "residual_feature_cols",
         "randomforest_params",
+        "training_params",
         "best_params",
         "rf_best_params",
     )

@@ -14,7 +14,8 @@ router = APIRouter()
 
 @router.get("/models", response_model=list[ModelInfo])
 def list_models():
-    return [ModelInfo(**item) for item in list_model_catalog()]
+    catalog = list_model_catalog()
+    return [ModelInfo(**item) for item in catalog]
 
 
 @router.post("/models/register", response_model=ModelResponse)

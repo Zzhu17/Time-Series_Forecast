@@ -94,10 +94,16 @@ def _run_task(task_id: str, payload: Dict[str, Any]):
         model_record = result.get("model_record") if isinstance(result, dict) else None
         degraded = bool(result.get("degraded", False)) if isinstance(result, dict) else False
         reason = result.get("degraded_reason") if isinstance(result, dict) else None
+        fallback_model = result.get("fallback_model") if isinstance(result, dict) else None
 
         rec.metrics = TaskRecord.dumps(metrics)
         rec.artifacts = TaskRecord.dumps(
-            {"artifacts": artifacts, "model_record": model_record, "degraded_reason": reason}
+            {
+                "artifacts": artifacts,
+                "model_record": model_record,
+                "degraded_reason": reason,
+                "fallback_model": fallback_model,
+            }
         )
         rec.status = "success"
         rec.degraded = degraded
@@ -188,3 +194,32 @@ def list_tasks(limit: int = 20, offset: int = 0):
         return [r.to_dict() for r in q.all()]
     finally:
         session.close()
+
+
+def recent_degrade_stats(window_size: int = 100) -> Dict[str, Any]:
+    session = SessionLocal()
+    try:
+        q = session.query(TaskRecord).order_by(TaskRecord.created_at.desc())
+        if window_size > 0:
+            q = q.limit(window_size)
+        items = [r.to_dict() for r in q.all()]
+    finally:
+        session.close()
+
+    total = len(items)
+    degraded_items = [x for x in items if bool(x.get("degraded", False))]
+    reason_counts: Dict[str, int] = {}
+    fallback_counts: Dict[str, int] = {}
+    for item in degraded_items:
+        reason = str(item.get("degraded_reason") or "unknown")
+        fallback = str(item.get("fallback_model") or "unknown")
+        reason_counts[reason] = int(reason_counts.get(reason, 0)) + 1
+        fallback_counts[fallback] = int(fallback_counts.get(fallback, 0)) + 1
+    return {
+        "window_size": window_size,
+        "total_tasks": total,
+        "degraded_tasks": len(degraded_items),
+        "degraded_rate": (float(len(degraded_items)) / float(total)) if total else 0.0,
+        "by_reason": reason_counts,
+        "by_fallback_model": fallback_counts,
+    }

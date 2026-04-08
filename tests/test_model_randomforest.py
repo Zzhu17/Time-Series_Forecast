@@ -49,6 +49,8 @@ def test_randomforest_minimal_training_returns_7tuple(tmp_path: Path):
     assert len(test_true) == len(test_pred)
     assert model is not None
     assert isinstance(params, dict)
+    assert params.get("model") == "randomforest"
+    assert isinstance(params.get("split"), dict)
 
 
 def test_randomforest_missing_target_column_raises(tmp_path: Path):
