@@ -17,5 +17,6 @@ python-multipart>=0.0.9
 prometheus-client>=0.19.0
 sqlalchemy>=2.0.0
 psycopg[binary]>=3.1.9
+# test client used by API tests
 httpx>=0.26.0
 types-PyYAML>=6.0.12.12

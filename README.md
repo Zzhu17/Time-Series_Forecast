@@ -30,6 +30,8 @@ If you previously committed large files (e.g. `Project/artifacts/informer_model.
 ## Development
 
 - Install lightweight dev tools: `pip install -r requirements-dev.txt`
+- 测试依赖最小集合（可导入即可运行测试收集）：`pytest`、`httpx`、`fastapi`
+  - 快速校验命令：`./scripts/check_test_env.sh`
 - Run fast tests (no heavy deps required): `PYTHONPATH=Project pytest -q tests`
 - CI runs on GitHub Actions (`.github/workflows/ci.yml`) using `requirements-ci.txt`.
 - Lint/type check (optional locally): `ruff check .` and `PYTHONPATH=Project mypy Project tests` (configured in `pyproject.toml`)
