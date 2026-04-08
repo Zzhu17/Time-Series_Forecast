@@ -210,6 +210,19 @@ prediction:
 baseline:
   season_len: 0
 
+quality_gate:
+  enabled: true
+  required_metrics:
+    MAPE: 0.30
+    RMSE: 100.0
+    MAE: 80.0
+  baseline:
+    enabled: true
+    max_degradation:
+      MAPE: 0.05
+      RMSE: 0.05
+      MAE: 0.05
+
 # 通用模型配置参数，包括阈值设定与模型默认结构
 
 logging:

@@ -10,6 +10,8 @@ from services.db import ModelRecord, SessionLocal, init_db
 
 init_db()
 
+ALLOWED_STAGES = {"candidate", "production", "archived"}
+
 
 def _now():
     return datetime.utcnow()
@@ -24,6 +26,9 @@ def register_model(
     metrics: Optional[Dict[str, Any]] = None,
     artifacts: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    stage_value = str(stage or "candidate").strip().lower()
+    if stage_value not in ALLOWED_STAGES:
+        stage_value = "candidate"
     rec_id = str(uuid.uuid4())
     session = SessionLocal()
     try:
@@ -31,13 +36,13 @@ def register_model(
             id=rec_id,
             name=name,
             version=version,
-            stage=stage,
+            stage=stage_value,
             params=ModelRecord.dumps(params),
             metrics=ModelRecord.dumps(metrics),
             artifacts=ModelRecord.dumps(artifacts),
             created_at=_now(),
             updated_at=_now(),
-            promoted_at=_now() if stage == "production" else None,
+            promoted_at=_now() if stage_value == "production" else None,
         )
         session.add(rec)
         session.commit()
