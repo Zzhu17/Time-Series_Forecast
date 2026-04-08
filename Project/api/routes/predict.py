@@ -33,7 +33,9 @@ def predict(req: PredictRequest):
     resp = PredictResponse(
         status=result.get("status", "ok"),
         degraded=bool(result.get("degraded", False)),
-        reason=result.get("reason"),
+        degraded_reason=result.get("degraded_reason") or result.get("reason"),
+        fallback_model=result.get("fallback_model"),
+        reason=result.get("degraded_reason") or result.get("reason"),
         predictions=result.get("predictions", []),
         used_model=result.get("used_model", req.model_name),
     )
@@ -43,7 +45,7 @@ def predict(req: PredictRequest):
         trace_id=trace_id,
         model=resp.used_model,
         degraded=resp.degraded,
-        reason=resp.reason,
+        reason=resp.degraded_reason,
         duration_ms=int((time.time() - req_start) * 1000),
     )
     return resp

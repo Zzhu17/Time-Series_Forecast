@@ -35,3 +35,17 @@ groups:
         annotations:
           summary: "Task failures detected"
           description: "Training task failures observed in the last 5 minutes."
+
+      - alert: HighDegradeRatio
+        expr: |
+          (
+            sum(increase(tsf_degrade_total[15m]))
+            /
+            clamp_min(sum(increase(predict_latency_seconds_count[15m])), 1)
+          ) > 0.15
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High degrade ratio"
+          description: "Degrade ratio over the last 15 minutes exceeds 15%."
