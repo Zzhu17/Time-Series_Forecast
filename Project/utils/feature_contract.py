@@ -118,6 +118,7 @@ def align_df_to_feature_contract(
     contract: Optional[Dict[str, Any]] = None,
     recompute_policy: str = "error",
     tail_rows: Optional[int] = None,
+    allow_degrade: bool = False,
 ) -> Tuple[pd.DataFrame, Dict[str, Any], List[str]]:
     """
     Enforce a frozen feature space at predict-time with 3-class missing strategy:
@@ -132,19 +133,49 @@ def align_df_to_feature_contract(
 
     required_core = set([value_col])
     repairable_core = set()
+    contract_order: List[str] = list(feature_cols)
     if isinstance(contract, dict):
         required_core |= set([c for c in (contract.get("required_core_cols") or contract.get("core_cols") or []) if isinstance(c, str)])
         repairable_core |= set([c for c in (contract.get("repairable_core_cols") or contract.get("recomputable_cols") or []) if isinstance(c, str)])
+        frozen_order = contract.get("feature_order") or contract.get("feature_cols")
+        if isinstance(frozen_order, list) and frozen_order:
+            contract_order = [str(c) for c in frozen_order if str(c).strip()]
 
     out = df.copy()
-    report: Dict[str, Any] = {"rebuilt": [], "recomputed": [], "dropped_optional": [], "missing_required": []}
+    report: Dict[str, Any] = {
+        "rebuilt": [],
+        "recomputed": [],
+        "dropped_optional": [],
+        "missing_required": [],
+        "contract_diff": {
+            "missing_columns": [],
+            "extra_columns": [],
+            "order_mismatch": [],
+            "type_cast_failed": [],
+        },
+    }
+
+    expected_order = [c for c in contract_order if c != time_col]
+    incoming_features = [str(c) for c in out.columns if str(c) != time_col]
+    report["contract_diff"]["missing_columns"] = sorted([c for c in expected_order if c not in incoming_features])
+    report["contract_diff"]["extra_columns"] = sorted([c for c in incoming_features if c not in expected_order])
+    if incoming_features != expected_order:
+        report["contract_diff"]["order_mismatch"] = [
+            {"expected_index": idx, "expected": exp, "actual": incoming_features[idx] if idx < len(incoming_features) else None}
+            for idx, exp in enumerate(expected_order)
+            if idx >= len(incoming_features) or incoming_features[idx] != exp
+        ]
 
     if any(c in safe_time_features() for c in feature_cols):
         out = ensure_calendar_features(out, time_col=time_col)
 
     for c in feature_cols:
         if c in out.columns and c != time_col:
+            original = out[c]
             out[c] = pd.to_numeric(out[c], errors="coerce")
+            bad_cast = bool(original.notna().any() and out[c].isna().all())
+            if bad_cast:
+                report["contract_diff"]["type_cast_failed"].append(c)
 
     def _has_nan(s: pd.Series) -> bool:
         if tail_rows is not None and tail_rows > 0:
@@ -157,7 +188,10 @@ def align_df_to_feature_contract(
             if c not in out.columns or _has_nan(out[c]):
                 report["missing_required"].append(c)
     if report["missing_required"]:
-        raise KeyError(f"Missing required core features at predict-time: {sorted(set(report['missing_required']))}")
+        if not allow_degrade:
+            raise KeyError(f"feature contract validation failed: {report}")
+        for c in report["missing_required"]:
+            report["dropped_optional"].append(c)
 
     # Repairable core: recompute if needed
     for c in feature_cols:
@@ -168,17 +202,29 @@ def align_df_to_feature_contract(
                 out[c] = recompute_feature_column(out, c, value_col=value_col, time_col=time_col)
                 report["recomputed"].append(c)
             if _has_nan(out[c]):
-                raise ValueError(f"Repairable core feature '{c}' still contains NaN after recompute.")
+                if not allow_degrade:
+                    raise ValueError(f"feature contract validation failed: {report}")
+                report["dropped_optional"].append(c)
 
     # Optional: if missing/NaN -> drop from usable feature set (no silent fill)
     usable_cols: List[str] = []
     for c in feature_cols:
         if c in required_core or c in repairable_core:
+            if allow_degrade and c in report["dropped_optional"]:
+                continue
             usable_cols.append(c)
             continue
         if c not in out.columns or _has_nan(out[c]):
             report["dropped_optional"].append(c)
             continue
         usable_cols.append(c)
+
+    has_diff = bool(
+        report["contract_diff"]["missing_columns"]
+        or report["contract_diff"]["order_mismatch"]
+        or report["contract_diff"]["type_cast_failed"]
+    )
+    if has_diff and not allow_degrade:
+        raise ValueError(f"feature contract validation failed: {report}")
 
     return out, report, usable_cols

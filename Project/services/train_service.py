@@ -14,7 +14,7 @@ from services.registry import register_model
 from services.pipeline_loader import load_pipeline_module
 from services.snapshot import cacheable_results
 from services.training_payloads import normalize_training_payload
-from utils.metrics import observe_task
+from utils.metrics import observe_degrade, observe_task
 
 
 def _artifact_dir_for_task(task_id: str) -> Path:
@@ -290,6 +290,9 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
         degraded_reason = data.get("degraded_reason")
         gate_failed_reason = _evaluate_quality_gate(config, metrics)
         model_stage = "archived" if gate_failed_reason else "candidate"
+        fallback_model = data.get("degraded_mode") if degraded else None
+        if degraded and emit_metrics:
+            observe_degrade(model=model_alias or model_name, reason=degraded_reason)
 
         params = {
             "task_id": task_id,
@@ -326,6 +329,7 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
             "degraded": degraded,
             "degraded_reason": degraded_reason,
             "gate_failed_reason": gate_failed_reason,
+            "fallback_model": fallback_model,
             "model_record": model_record,
             "results": results,
             "cacheable_results": snap_results,

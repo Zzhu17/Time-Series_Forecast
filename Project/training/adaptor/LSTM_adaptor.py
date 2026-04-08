@@ -38,6 +38,18 @@ def _read_lstm_hparams(config: dict) -> dict:
     }
     return h
 
+
+def _apply_smoke_mode_if_needed(config: dict, hparams: dict) -> dict:
+    """CI smoke mode: force tiny training setup for fast CPU checks."""
+    training_cfg = (config.get("training") or {})
+    smoke_cfg = (training_cfg.get("smoke") or {})
+    if not bool(smoke_cfg.get("enabled", False)):
+        return hparams
+    out = dict(hparams)
+    out["batch_size"] = min(int(out.get("batch_size", 32)), int(smoke_cfg.get("batch_size", 8)))
+    out["epochs"] = min(int(out.get("epochs", 10)), int(smoke_cfg.get("epochs", 2)))
+    return out
+
 def _build_subconfig_for_train(call_base: dict, time_col: str, value_col: str, hparams: dict) -> dict:
     """
     生成传给 train_lstm_model 的最小配置字典（不改变其读取逻辑）。
@@ -71,7 +83,7 @@ def train_lstm_model_7tuple(df: pd.DataFrame, config: dict):
     """
     # 1) 读取字段
     time_col, value_col = _read_defaults(config)
-    hparams = _read_lstm_hparams(config)
+    hparams = _apply_smoke_mode_if_needed(config, _read_lstm_hparams(config))
 
     # 2) 清洗/类型安全（不改变你的训练逻辑）
     _df_clean = clean_dataframe(df, value_col=value_col, time_col=time_col, feature_cols=None)
@@ -104,7 +116,22 @@ def train_lstm_model_7tuple(df: pd.DataFrame, config: dict):
 
     # 4) 直接调用新 LSTM 训练（单次即可获得 val/test 结果）
     cfg_for_train = _build_subconfig_for_train(config, time_col, value_col, hparams)
-    return train_lstm_model(df, cfg_for_train)
+    out = train_lstm_model(df, cfg_for_train)
+    if not (isinstance(out, tuple) and len(out) == 7):
+        raise ValueError("train_lstm_model must return 7-tuple")
+
+    val_true, val_pred, test_true, test_pred, final_model, test_forecast_df, raw_params = out
+    v_len = int(len(val_true)) if val_true is not None else 0
+    te_len = int(len(test_true)) if test_true is not None else 0
+    tr_len = max(0, int(len(df)) - v_len - te_len)
+    training_params = {
+        "model": "lstm",
+        "split": {"train_len": tr_len, "val_len": v_len, "test_len": te_len},
+        "fit_status": "trained",
+        **(raw_params if isinstance(raw_params, dict) else {}),
+    }
+    config.setdefault("artifacts", {})["training_params"] = dict(training_params)
+    return val_true, val_pred, test_true, test_pred, final_model, test_forecast_df, training_params
 
 
 def get_forecaster():
