@@ -4,6 +4,8 @@ import importlib.util
 from typing import Any, Dict, List, Optional
 
 from services import registry
+from models.registry import FORECASTER_REGISTRY, MODEL_REGISTRY, SUPPORTED_MODELS, TRAINER_REGISTRY
+from services.contract_utils import apply_hybrid_preset
 
 
 ALLOWED_STAGES = {"candidate", "production", "archived"}
@@ -34,63 +36,32 @@ def _check_deps(deps: List[str]) -> tuple[bool, List[str]]:
     return (len(missing) == 0), missing
 
 
-def list_model_catalog() -> List[Dict[str, str]]:
-    catalog = [
-        {
-            "name": "baseline",
-            "description": "Naive last-value persistence.",
-            "deps": [],
-        },
-        {
-            "name": "informer",
-            "description": "Transformer forecaster (requires torch).",
-            "deps": ["torch"],
-        },
-        {
-            "name": "lstm",
-            "description": "LSTM forecaster (requires torch).",
-            "deps": ["torch"],
-        },
-        {
-            "name": "xgboost",
-            "description": "Gradient boosting regressor (requires xgboost).",
-            "deps": ["xgboost"],
-        },
-        {
-            "name": "randomforest",
-            "description": "Random forest regressor (requires scikit-learn).",
-            "deps": ["sklearn"],
-        },
-        {
-            "name": "arima",
-            "description": "Auto ARIMA (requires pmdarima).",
-            "deps": ["pmdarima"],
-        },
-        {
-            "name": "prophet",
-            "description": "Prophet forecaster (requires prophet).",
-            "deps": ["prophet"],
-        },
-        {
-            "name": "xgboost+informer",
-            "description": "Informer forecast + XGBoost residual correction.",
-            "deps": ["torch", "xgboost"],
-        },
-        {
-            "name": "xgboost+lstm",
-            "description": "LSTM forecast + XGBoost residual correction.",
-            "deps": ["torch", "xgboost"],
-        },
-    ]
+def _is_forecastable(model_name: str) -> bool:
+    key = str(model_name or "").strip().lower()
+    if key in FORECASTER_REGISTRY:
+        return True
+    base, _residual, _alias = apply_hybrid_preset(key, None)
+    return str(base or "").strip().lower() in FORECASTER_REGISTRY
 
-    out: List[Dict[str, str]] = []
-    for item in catalog:
+
+def list_model_catalog() -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for item in SUPPORTED_MODELS:
+        name = str(item.get("name") or "").strip().lower()
         deps = item.get("deps") or []
         available, missing = _check_deps(deps)
+        listed = bool(item.get("listed", True))
+        trainable = name in TRAINER_REGISTRY
+        buildable = name in MODEL_REGISTRY
+        forecastable = _is_forecastable(name)
         out.append(
             {
-                "name": item["name"],
-                "description": item["description"],
+                "name": str(item["name"]),
+                "description": str(item["description"]),
+                "listed": listed,
+                "trainable": trainable,
+                "buildable": buildable,
+                "forecastable": forecastable,
                 "available": available,
                 "missing_deps": missing or None,
             }

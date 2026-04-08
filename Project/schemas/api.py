@@ -109,5 +109,9 @@ class ModelResponse(BaseModel):
 class ModelInfo(BaseModel):
     name: str
     description: str
+    listed: bool = True
+    trainable: bool = False
+    buildable: bool = False
+    forecastable: bool = False
     available: bool = True
     missing_deps: Optional[List[str]] = None
