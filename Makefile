@@ -1,4 +1,4 @@
-.PHONY: install install-dev test lint format typecheck run-api run-ui docker-up
+.PHONY: install install-dev test test-models lint format typecheck run-api run-ui docker-up
 
 install:
 	pip install -r Project/requirements.txt
@@ -9,6 +9,15 @@ install-dev:
 
 test:
 	PYTHONPATH=Project pytest -q tests
+
+test-models:
+	PYTHONPATH=Project pytest -q \
+		tests/test_model_xgboost.py \
+		tests/test_model_randomforest.py \
+		tests/test_model_arima.py \
+		tests/test_model_prophet.py \
+		tests/test_model_lstm.py \
+		tests/test_model_informer.py
 
 lint:
 	ruff check .
