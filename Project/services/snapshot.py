@@ -340,6 +340,7 @@ def safe_artifacts_from_config(cfg: dict) -> dict:
         "residual_model_type",
         "residual_feature_cols",
         "randomforest_params",
+        "training_params",
         "best_params",
         "rf_best_params",
     )

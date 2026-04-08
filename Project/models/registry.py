@@ -8,7 +8,7 @@ Important: keep imports LAZY so the app can start even when optional dependencie
 from __future__ import annotations
 
 import importlib
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, List
 
 
 def _lazy(module: str, attr: str, *, install_hint: str | None = None) -> Callable[..., Any]:
@@ -72,3 +72,66 @@ MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
 }
 
 __all__ = ("MODEL_REGISTRY", "TRAINER_REGISTRY", "FORECASTER_REGISTRY", "MODEL_CATALOG")
+SUPPORTED_MODELS: List[Dict[str, Any]] = [
+    {
+        "name": "baseline",
+        "description": "Naive last-value persistence.",
+        "deps": [],
+        "listed": True,
+    },
+    {
+        "name": "informer",
+        "description": "Transformer forecaster (requires torch).",
+        "deps": ["torch"],
+        "listed": True,
+    },
+    {
+        "name": "lstm",
+        "description": "LSTM forecaster (requires torch).",
+        "deps": ["torch"],
+        "listed": True,
+    },
+    {
+        "name": "xgboost",
+        "description": "Gradient boosting regressor (requires xgboost).",
+        "deps": ["xgboost"],
+        "listed": True,
+    },
+    {
+        "name": "randomforest",
+        "description": "Random forest regressor (requires scikit-learn).",
+        "deps": ["sklearn"],
+        "listed": True,
+    },
+    {
+        "name": "arima",
+        "description": "Auto ARIMA (requires pmdarima).",
+        "deps": ["pmdarima"],
+        "listed": True,
+    },
+    {
+        "name": "prophet",
+        "description": "Prophet forecaster (requires prophet).",
+        "deps": ["prophet"],
+        "listed": True,
+    },
+    {
+        "name": "xgboost+informer",
+        "description": "Informer forecast + XGBoost residual correction.",
+        "deps": ["torch", "xgboost"],
+        "listed": True,
+    },
+    {
+        "name": "xgboost+lstm",
+        "description": "LSTM forecast + XGBoost residual correction.",
+        "deps": ["torch", "xgboost"],
+        "listed": True,
+    },
+]
+
+__all__ = (
+    "MODEL_REGISTRY",
+    "TRAINER_REGISTRY",
+    "FORECASTER_REGISTRY",
+    "SUPPORTED_MODELS",
+)

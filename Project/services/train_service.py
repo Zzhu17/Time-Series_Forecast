@@ -6,6 +6,7 @@ import json
 import shutil
 import os
 import time
+import math
 
 import pandas as pd
 
@@ -14,7 +15,7 @@ from services.registry import register_model
 from services.pipeline_loader import load_pipeline_module
 from services.snapshot import cacheable_results
 from services.training_payloads import normalize_training_payload
-from utils.metrics import observe_task
+from utils.metrics import observe_degrade, observe_task
 
 
 def _training_params_summary(normalized: Dict[str, Any], *, task_id: str) -> Dict[str, Any]:
@@ -41,6 +42,48 @@ def _artifact_dir_for_task(task_id: str) -> Path:
 
 def _artifact_root() -> Path:
     return Path(__file__).resolve().parents[2] / "artifacts" / "runs"
+
+
+def _safe_float(val: Any) -> Optional[float]:
+    try:
+        f = float(val)
+    except Exception:
+        return None
+    if not math.isfinite(f):
+        return None
+    return f
+
+
+def _extract_primary_nrmse(metrics: Dict[str, Any]) -> Optional[float]:
+    if not isinstance(metrics, dict):
+        return None
+    for key in ("test", "validation"):
+        blk = metrics.get(key)
+        if isinstance(blk, dict):
+            score = _safe_float(blk.get("nrmse"))
+            if score is not None:
+                return score
+    return _safe_float(metrics.get("nrmse"))
+
+
+def evaluate_training_gate(*, metrics: Dict[str, Any], degraded: bool) -> Dict[str, Any]:
+    threshold = _safe_float(os.getenv("TRAINING_GATE_MAX_NRMSE", "1.0"))
+    if threshold is None:
+        threshold = 1.0
+    nrmse = _extract_primary_nrmse(metrics)
+    checks = {
+        "not_degraded": not bool(degraded),
+        "nrmse_available": nrmse is not None,
+        "nrmse_within_threshold": (nrmse is not None and nrmse <= threshold),
+    }
+    passed = all(checks.values())
+    failed = [name for name, ok in checks.items() if not ok]
+    return {
+        "passed": passed,
+        "failed_checks": failed,
+        "thresholds": {"max_nrmse": threshold},
+        "observed": {"nrmse": nrmse, "degraded": bool(degraded)},
+    }
 
 
 def _purge_old_runs(current_run_id: str, keep: int = 1) -> None:
@@ -83,6 +126,13 @@ def _write_latest_report(run_id: str, artifacts: Dict[str, Any]) -> None:
     )
 
 
+def _persist_training_params(task_id: str, training_params: Dict[str, Any]) -> str:
+    run_dir = _artifact_dir_for_task(task_id)
+    out_path = run_dir / "training_params.json"
+    out_path.write_text(json.dumps(training_params, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(out_path)
+
+
 def _model_filename(model_name: str) -> str:
     key = str(model_name).lower()
     if key == "xgboost":
@@ -114,6 +164,71 @@ def _default_target_transform(model_name: str) -> Dict[str, Any]:
         "enabled": model_name.lower() in ("informer", "lstm"),
         "method": "log1p",
     }
+
+
+def _metric_value(metrics_block: Dict[str, Any], metric_name: str) -> Optional[float]:
+    if not isinstance(metrics_block, dict):
+        return None
+    target = metric_name.lower()
+    for key, val in metrics_block.items():
+        if str(key).lower() != target:
+            continue
+        try:
+            num = float(val)
+            if num == num:
+                return num
+        except Exception:
+            return None
+    return None
+
+
+def _evaluate_quality_gate(config: Dict[str, Any], metrics: Dict[str, Any]) -> Optional[str]:
+    gate_cfg = (config or {}).get("quality_gate")
+    if not isinstance(gate_cfg, dict) or not bool(gate_cfg.get("enabled", True)):
+        return None
+    test_metrics = metrics.get("test") if isinstance(metrics.get("test"), dict) else {}
+    baseline_metrics = metrics.get("baseline") if isinstance(metrics.get("baseline"), dict) else {}
+    reasons: List[str] = []
+
+    required_metrics = gate_cfg.get("required_metrics")
+    if isinstance(required_metrics, dict):
+        for metric_name, threshold in required_metrics.items():
+            val = _metric_value(test_metrics, str(metric_name))
+            if val is None:
+                reasons.append(f"missing test metric: {metric_name}")
+                continue
+            try:
+                limit = float(threshold)
+            except Exception:
+                reasons.append(f"invalid threshold for {metric_name}")
+                continue
+            if val > limit:
+                reasons.append(f"{metric_name}={val:.6g} > {limit:.6g}")
+
+    baseline_cfg = gate_cfg.get("baseline")
+    if isinstance(baseline_cfg, dict) and bool(baseline_cfg.get("enabled", True)):
+        max_degradation = baseline_cfg.get("max_degradation")
+        if isinstance(max_degradation, dict):
+            for metric_name, rel_tol in max_degradation.items():
+                test_val = _metric_value(test_metrics, str(metric_name))
+                base_val = _metric_value(baseline_metrics, str(metric_name))
+                if test_val is None or base_val is None:
+                    reasons.append(f"missing baseline compare metric: {metric_name}")
+                    continue
+                try:
+                    tol = float(rel_tol)
+                except Exception:
+                    reasons.append(f"invalid baseline threshold for {metric_name}")
+                    continue
+                allow_upper = base_val * (1.0 + tol)
+                if test_val > allow_upper:
+                    reasons.append(
+                        f"{metric_name} degraded: test={test_val:.6g}, baseline={base_val:.6g}, tol={tol:.2%}"
+                    )
+
+    if reasons:
+        return "; ".join(reasons)
+    return None
 
 
 def build_training_config(
@@ -249,6 +364,11 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
                 artifacts["training_params_path"] = str(p)
         except Exception:
             pass
+        gate_failed_reason = _evaluate_quality_gate(config, metrics)
+        model_stage = "archived" if gate_failed_reason else "candidate"
+        fallback_model = data.get("degraded_mode") if degraded else None
+        if degraded and emit_metrics:
+            observe_degrade(model=model_alias or model_name, reason=degraded_reason)
 
         params = {
             "task_id": task_id,
@@ -261,10 +381,19 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
             "contract_report": contract_report,
             "training_params": training_params,
         }
+        trainer_params = artifacts.get(f"{str(model_name).lower()}_params") if isinstance(artifacts, dict) else None
+        params["training_params"] = trainer_params if isinstance(trainer_params, dict) else {}
+        gate = evaluate_training_gate(metrics=metrics if isinstance(metrics, dict) else {}, degraded=degraded)
+        params["quality_gate"] = gate
+        params["gate_passed"] = bool(gate.get("passed", False))
+        if isinstance(artifacts, dict):
+            artifacts["training_params_path"] = _persist_training_params(task_id, params["training_params"])
+            artifacts["quality_gate"] = gate
         model_record = register_model(
             name=str(model_alias or model_name),
             version=task_id,
-            stage="candidate",
+            stage="candidate" if bool(gate.get("passed", False)) else "archived",
+            stage=model_stage,
             params=params,
             metrics=metrics,
             artifacts=artifacts,
@@ -285,6 +414,8 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
             "artifacts": artifacts,
             "degraded": degraded,
             "degraded_reason": degraded_reason,
+            "gate_failed_reason": gate_failed_reason,
+            "fallback_model": fallback_model,
             "model_record": model_record,
             "results": results,
             "cacheable_results": snap_results,
@@ -295,6 +426,12 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
         raise
     finally:
         if emit_metrics:
+            if status == "success":
+                try:
+                    if "degraded" in locals() and bool(degraded):
+                        observe_degrade(stage="train", model=model_name, reason=str(degraded_reason or "degraded"))
+                except Exception:
+                    pass
             observe_task(
                 task_type="train",
                 model=model_name,

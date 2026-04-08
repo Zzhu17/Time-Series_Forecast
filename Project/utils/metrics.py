@@ -42,12 +42,23 @@ if _ENABLED:
         ["model"],
         buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5),
     )
+    DEGRADE_EVENTS = Counter(
+        "degrade_events_total",
+        "Count of degraded runs/predictions",
+        ["stage", "model", "reason"],
+    TSF_DEGRADE_TOTAL = Counter(
+        "tsf_degrade_total",
+        "Total degraded predictions/trainings",
+        ["model", "reason"],
+    )
 else:  # pragma: no cover
     HTTP_REQUESTS = None
     HTTP_LATENCY = None
     TASK_DURATION = None
     TASK_FAILURES = None
     PREDICT_LATENCY = None
+    DEGRADE_EVENTS = None
+    TSF_DEGRADE_TOTAL = None
 
 
 def metrics_enabled() -> bool:
@@ -87,3 +98,42 @@ def observe_predict(*, model: Optional[str], duration: float) -> None:
         return
     model_name = model or "unknown"
     PREDICT_LATENCY.labels(model=model_name).observe(max(0.0, float(duration)))
+
+
+def observe_degrade(*, stage: str, model: Optional[str], reason: Optional[str]) -> None:
+    if not _ENABLED:
+        return
+    model_name = model or "unknown"
+    reason_name = (reason or "unspecified").strip()[:64] or "unspecified"
+    DEGRADE_EVENTS.labels(stage=stage, model=model_name, reason=reason_name).inc()
+def normalize_degrade_reason(reason: Optional[str]) -> str:
+    raw_reason = str(reason or "").strip().lower()
+    if not raw_reason:
+        return "unknown"
+    if "model_not_supported" in raw_reason:
+        return "model_not_supported"
+    if "model_not_available" in raw_reason:
+        return "model_not_available"
+    if "multi_step_not_supported" in raw_reason:
+        return "multi_step_not_supported"
+    if "required_core_missing" in raw_reason:
+        return "required_core_missing"
+    if "non_informer_one_step_only" in raw_reason:
+        return "non_informer_one_step_only"
+    if "inverse_target_failed" in raw_reason:
+        return "inverse_target_failed"
+    if "residual_skipped" in raw_reason:
+        return "residual_skipped"
+    if "feature contract" in raw_reason:
+        return "feature_contract_fallback"
+    if "fallback" in raw_reason:
+        return "fallback_error"
+    return "other"
+
+
+def observe_degrade(*, model: Optional[str], reason: Optional[str]) -> None:
+    if not _ENABLED:
+        return
+    model_name = model or "unknown"
+    degrade_reason = normalize_degrade_reason(reason)
+    TSF_DEGRADE_TOTAL.labels(model=model_name, reason=degrade_reason).inc()
