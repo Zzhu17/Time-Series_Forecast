@@ -34,10 +34,9 @@ except Exception:  # pragma: no cover - minimal fallback for environments withou
         def transform(self, X):
             X = np.asarray(X, dtype=np.float32)
             return (X - self.mean_) / self.scale_
-
-    def inverse_transform(self, X):
-        X = np.asarray(X, dtype=np.float32)
-        return X * self.scale_ + self.mean_
+        def inverse_transform(self, X):
+            X = np.asarray(X, dtype=np.float32)
+            return X * self.scale_ + self.mean_
 
 try:  # pragma: no cover - optional dependency
     import joblib  # type: ignore
