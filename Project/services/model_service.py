@@ -3,12 +3,9 @@ from __future__ import annotations
 import importlib.util
 from typing import Any, Dict, List, Optional
 
-from models.registry import FORECASTER_REGISTRY, TRAINER_REGISTRY
-from services import registry
-from models.registry import MODEL_CATALOG
 from models.registry import FORECASTER_REGISTRY, MODEL_REGISTRY, SUPPORTED_MODELS, TRAINER_REGISTRY
+from services import registry
 from services.contract_utils import apply_hybrid_preset
-
 
 ALLOWED_STAGES = {"candidate", "production", "archived"}
 
@@ -38,11 +35,6 @@ def _check_deps(deps: List[str]) -> tuple[bool, List[str]]:
     return (len(missing) == 0), missing
 
 
-def list_model_catalog() -> List[Dict[str, str]]:
-    out: List[Dict[str, str]] = []
-    for name, item in MODEL_CATALOG.items():
-    for item in catalog:
-        name = item["name"]
 def _is_forecastable(model_name: str) -> bool:
     key = str(model_name or "").strip().lower()
     if key in FORECASTER_REGISTRY:
@@ -63,12 +55,8 @@ def list_model_catalog() -> List[Dict[str, Any]]:
         forecastable = _is_forecastable(name)
         out.append(
             {
-                "name": name,
-                "description": item["description"],
-                "trainer_key": name if name in TRAINER_REGISTRY else None,
-                "forecaster_key": name if name in FORECASTER_REGISTRY else None,
-                "name": str(item["name"]),
-                "description": str(item["description"]),
+                "name": str(item.get("name") or ""),
+                "description": str(item.get("description") or ""),
                 "listed": listed,
                 "trainable": trainable,
                 "buildable": buildable,

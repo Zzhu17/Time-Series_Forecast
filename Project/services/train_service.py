@@ -364,8 +364,6 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
                 artifacts["training_params_path"] = str(p)
         except Exception:
             pass
-        gate_failed_reason = _evaluate_quality_gate(config, metrics)
-        model_stage = "archived" if gate_failed_reason else "candidate"
         fallback_model = data.get("degraded_mode") if degraded else None
         if degraded and emit_metrics:
             observe_degrade(model=model_alias or model_name, reason=degraded_reason)
@@ -384,15 +382,26 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
         trainer_params = artifacts.get(f"{str(model_name).lower()}_params") if isinstance(artifacts, dict) else None
         params["training_params"] = trainer_params if isinstance(trainer_params, dict) else {}
         gate = evaluate_training_gate(metrics=metrics if isinstance(metrics, dict) else {}, degraded=degraded)
+        gate_failed_reason = _evaluate_quality_gate(config, metrics if isinstance(metrics, dict) else {})
+        if isinstance(gate_failed_reason, str):
+            parts = [p.strip() for p in gate_failed_reason.split(";") if p.strip()]
+            if parts and all(p.startswith("missing ") for p in parts):
+                gate_failed_reason = None
+        gate_passed = bool(gate.get("passed", False))
+        if gate_failed_reason is not None:
+            gate_passed = False
+        elif gate.get("observed", {}).get("nrmse") is None:
+            # When nrmse is unavailable, fall back to config-driven quality gate result.
+            gate_passed = True
         params["quality_gate"] = gate
-        params["gate_passed"] = bool(gate.get("passed", False))
+        params["gate_passed"] = gate_passed
+        model_stage = "candidate" if gate_passed else "archived"
         if isinstance(artifacts, dict):
             artifacts["training_params_path"] = _persist_training_params(task_id, params["training_params"])
             artifacts["quality_gate"] = gate
         model_record = register_model(
             name=str(model_alias or model_name),
             version=task_id,
-            stage="candidate" if bool(gate.get("passed", False)) else "archived",
             stage=model_stage,
             params=params,
             metrics=metrics,
