@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from typing import List, Dict, Any, Tuple, cast
+from typing import List, Dict, Any, Tuple
 
 def generate_features(
     df: pd.DataFrame,
@@ -54,7 +54,7 @@ def generate_features(
 
     # ---- 2) 基本预处理与排序 ----
     df[time_col] = pd.to_datetime(df[time_col])
-    df = df.sort_values(by=cast(str, time_col))
+    df = df.sort_values(by=time_col)
 
     # ---- 3) 生成时间派生特征（全部为数值列，便于被自动纳入特征） ----
     df['month'] = df[time_col].dt.month
@@ -90,9 +90,9 @@ def generate_features(
             # 使用配置给定列，但要与 df 取交集，并保证 value_col 在首位
             cfg_list: List[str] = list(cfg_cols) if cfg_cols else [value_col]
             present: List[str] = [str(c) for c in cfg_list if c in df.columns]
-            others: List[str] = [c for c in present if c != value_col]
+            present_others: List[str] = [c for c in present if c != value_col]
             head: List[str] = [value_col] if value_col in df.columns else []
-            feature_cols = head + others
+            feature_cols = head + present_others
             if not feature_cols:
                 feature_cols = [value_col]
 

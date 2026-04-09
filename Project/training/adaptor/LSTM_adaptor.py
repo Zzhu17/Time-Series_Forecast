@@ -125,7 +125,6 @@ def train_lstm_model_7tuple(df: pd.DataFrame, config: dict):
     cfg_for_train = _build_subconfig_for_train(config, time_col, value_col, hparams)
     if bool(config.get("smoke_mode", False)):
         cfg_for_train["epochs"] = min(int(cfg_for_train.get("epochs", 1)), 1)
-    return train_lstm_model(df, cfg_for_train)
     out = train_lstm_model(df, cfg_for_train)
     if not (isinstance(out, tuple) and len(out) == 7):
         raise ValueError("train_lstm_model must return 7-tuple")

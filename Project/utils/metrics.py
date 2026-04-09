@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Optional
 
 try:  # pragma: no cover - optional dependency in some environments
-    from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST  # type: ignore
+    from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest  # type: ignore
 except Exception:  # pragma: no cover
     Counter = None  # type: ignore
     Histogram = None  # type: ignore
@@ -46,6 +46,7 @@ if _ENABLED:
         "degrade_events_total",
         "Count of degraded runs/predictions",
         ["stage", "model", "reason"],
+    )
     TSF_DEGRADE_TOTAL = Counter(
         "tsf_degrade_total",
         "Total degraded predictions/trainings",
@@ -100,12 +101,6 @@ def observe_predict(*, model: Optional[str], duration: float) -> None:
     PREDICT_LATENCY.labels(model=model_name).observe(max(0.0, float(duration)))
 
 
-def observe_degrade(*, stage: str, model: Optional[str], reason: Optional[str]) -> None:
-    if not _ENABLED:
-        return
-    model_name = model or "unknown"
-    reason_name = (reason or "unspecified").strip()[:64] or "unspecified"
-    DEGRADE_EVENTS.labels(stage=stage, model=model_name, reason=reason_name).inc()
 def normalize_degrade_reason(reason: Optional[str]) -> str:
     raw_reason = str(reason or "").strip().lower()
     if not raw_reason:
@@ -131,9 +126,12 @@ def normalize_degrade_reason(reason: Optional[str]) -> str:
     return "other"
 
 
-def observe_degrade(*, model: Optional[str], reason: Optional[str]) -> None:
+def observe_degrade(*, model: Optional[str], reason: Optional[str], stage: Optional[str] = None) -> None:
     if not _ENABLED:
         return
     model_name = model or "unknown"
     degrade_reason = normalize_degrade_reason(reason)
     TSF_DEGRADE_TOTAL.labels(model=model_name, reason=degrade_reason).inc()
+    if DEGRADE_EVENTS is not None:
+        stage_name = str(stage or "unknown").strip() or "unknown"
+        DEGRADE_EVENTS.labels(stage=stage_name, model=model_name, reason=degrade_reason).inc()

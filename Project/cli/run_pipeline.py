@@ -13,7 +13,7 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 import pandas as pd
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from configs.config import load_yaml_config
 from services.pipeline import run_pipeline_and_update_state
