@@ -101,6 +101,7 @@ def train_informer_model_7tuple(df, config):
     # 第7位固定 training_params(dict)
     training_params = {
         "model": "informer",
+        "model_name": "informer",
         "split": {
             "train_len": int(split_info.get("train_len") or max(0, len(df) - (len(val_true) if val_true is not None else 0) - (len(test_true) if test_true is not None else 0))),
             "val_len": int(split_info.get("val_len") or (len(val_true) if val_true is not None else 0)),

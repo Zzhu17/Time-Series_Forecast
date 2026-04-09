@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from typing import Any
 
 pytest.importorskip("torch")
 
@@ -24,7 +25,7 @@ def _make_df(n: int = 240) -> pd.DataFrame:
 
 def _run_once(seed: int):
     df = _make_df()
-    cfg = {
+    cfg: dict[str, Any] = {
         "seed": seed,
         "default": {"time_col": "date", "value_col": "value", "dtype": "float32"},
         "dtype": "float32",

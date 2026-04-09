@@ -9,22 +9,13 @@ def train_prophet_model_7tuple(df, config):
 
     out = train_prophet_model(df, config)
 
-    # If the original trainer already returns a 7-tuple, pass it through directly.
-    if isinstance(out, tuple) and len(out) == 7:
-        val_true, val_forecast, test_true, test_forecast, final_model, test_forecast_df, best_params = out
-        if not isinstance(best_params, dict):
-            best_params = {
-                "model_name": "prophet",
-                "trainer": "prophet_adaptor",
-                "raw_params": best_params,
-            }
-        return (val_true, val_forecast, test_true, test_forecast, final_model, test_forecast_df, best_params)
     artifacts = config.setdefault("artifacts", {})
 
     def _to_training_params(raw_params, train_len=0, val_len=0, test_len=0):
         params = raw_params if isinstance(raw_params, dict) else {}
         out = {
             "model": "prophet",
+            "model_name": "prophet",
             "split": {"train_len": int(train_len), "val_len": int(val_len), "test_len": int(test_len)},
             "fit_status": "trained",
             **params,

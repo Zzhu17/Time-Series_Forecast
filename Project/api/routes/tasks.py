@@ -15,8 +15,15 @@ def get_task_status(task_id: str):
 
 
 @router.get("/tasks")
-def get_task_list(limit: int = 20, offset: int = 0, stats_window: int = 100):
+def get_task_list(
+    limit: int = 20,
+    offset: int = 0,
+    stats_window: int = 100,
+    include_stats: bool = False,
+):
     items = list_tasks(limit=limit, offset=offset)
+    if not include_stats:
+        return items
     return {
         "items": items,
         "degrade_stats": recent_degrade_stats(window_size=stats_window),
