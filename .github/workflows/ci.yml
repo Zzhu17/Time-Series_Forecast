@@ -14,11 +14,22 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-          cache: "pip"
-      - name: Install minimal dependencies
+      - name: Resolve Python version for cache key
+        id: py
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements-ci.txt
+          echo "version=$(python -c \"import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')\")" >> "$GITHUB_OUTPUT"
+      - name: Restore pip HTTP cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip/http-v2
+          key: ${{ runner.os }}-pip-http-py${{ steps.py.outputs.version }}-lock-${{ hashFiles('requirements.lock') }}
+      - name: Restore pip wheel cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip/wheels
+          key: ${{ runner.os }}-pip-wheel-py${{ steps.py.outputs.version }}-lock-${{ hashFiles('requirements.lock') }}
+      - name: Install dependencies (single entry)
+        run: ./scripts/ci_install.sh --profile minimal
       - name: Lint
         run: ruff check .
       - name: Type check
@@ -34,6 +45,11 @@ jobs:
         with:
           name: minimal-skip-reasons
           path: skip-reasons-minimal.txt
+      - name: Upload dependency freeze snapshots (minimal)
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-freeze-minimal
+          path: ci-artifacts/pip-freeze-*.txt
       - name: Verify tag matches VERSION
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
@@ -51,13 +67,28 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-          cache: "pip"
-      - name: Install full dependencies
+      - name: Resolve Python version for cache key
+        id: py
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r Project/requirements.txt
-          python -m pip install -r requirements-ci.txt
+          echo "version=$(python -c \"import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')\")" >> "$GITHUB_OUTPUT"
+      - name: Restore pip HTTP cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip/http-v2
+          key: ${{ runner.os }}-pip-http-py${{ steps.py.outputs.version }}-lock-${{ hashFiles('requirements.lock') }}
+      - name: Restore pip wheel cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip/wheels
+          key: ${{ runner.os }}-pip-wheel-py${{ steps.py.outputs.version }}-lock-${{ hashFiles('requirements.lock') }}
+      - name: Install dependencies (single entry)
+        run: ./scripts/ci_install.sh --profile full
       - name: Tests (full)
         run: scripts/run_test_matrix.sh full
       - name: Model tests (full)
         run: scripts/run_test_matrix.sh models
+      - name: Upload dependency freeze snapshots (full)
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-freeze-full
+          path: ci-artifacts/pip-freeze-*.txt
