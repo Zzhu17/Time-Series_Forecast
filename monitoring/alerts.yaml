@@ -88,3 +88,23 @@ groups:
         annotations:
           summary: "Dominant degrade reason ratio is high"
           description: "Reason {{ $labels.reason }} accounts for >40% of degrade events in the last 15 minutes."
+
+      - alert: FallbackErrorSpike
+        expr: |
+          sum(increase(tsf_degrade_total{reason="fallback_error"}[10m])) >= 5
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Fallback errors are spiking"
+          description: "fallback_error degrade reasons reached >=5 in 10 minutes."
+
+      - alert: DegradeRateRecoveredInfo
+        expr: |
+          sum(rate(tsf_degrade_total[10m])) < 0.02
+        for: 15m
+        labels:
+          severity: info
+        annotations:
+          summary: "Degrade rate recovered"
+          description: "Degrade rate has remained below 0.02 events/sec for 15 minutes."
