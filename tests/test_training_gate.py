@@ -43,6 +43,7 @@ def test_run_training_task_registers_candidate_when_gate_passes(monkeypatch):
             }
 
     monkeypatch.setattr("services.train_service.load_pipeline_module", lambda: _PipelineModule())
+    monkeypatch.setattr("services.train_service.list_models", lambda limit=20: [])
     monkeypatch.setattr("services.train_service._write_latest_report", lambda *args, **kwargs: None)
     monkeypatch.setattr("services.train_service._purge_old_runs", lambda *args, **kwargs: None)
 
@@ -77,6 +78,7 @@ def test_run_training_task_registers_archived_when_gate_fails(monkeypatch):
             }
 
     monkeypatch.setattr("services.train_service.load_pipeline_module", lambda: _PipelineModule())
+    monkeypatch.setattr("services.train_service.list_models", lambda limit=20: [])
     monkeypatch.setattr("services.train_service._write_latest_report", lambda *args, **kwargs: None)
     monkeypatch.setattr("services.train_service._purge_old_runs", lambda *args, **kwargs: None)
 

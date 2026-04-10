@@ -5,3 +5,6 @@ debug:
   enabled: true
   print_shapes: true
   print_samples: true
+
+quality_gate:
+  profile: dev
