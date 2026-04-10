@@ -11,7 +11,7 @@ import math
 import pandas as pd
 
 from configs.config import load_yaml_config
-from services.registry import register_model
+from services.registry import list_models, register_model
 from services.pipeline_loader import load_pipeline_module
 from services.snapshot import cacheable_results
 from services.training_payloads import normalize_training_payload
@@ -182,28 +182,72 @@ def _metric_value(metrics_block: Dict[str, Any], metric_name: str) -> Optional[f
     return None
 
 
-def _evaluate_quality_gate(config: Dict[str, Any], metrics: Dict[str, Any]) -> Optional[str]:
+def _deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(base or {})
+    for k, v in (override or {}).items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge_dict(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def _resolve_quality_gate_config(config: Dict[str, Any]) -> Dict[str, Any]:
     gate_cfg = (config or {}).get("quality_gate")
+    if not isinstance(gate_cfg, dict):
+        return {}
+    profile = str(
+        gate_cfg.get("profile")
+        or os.getenv("TSF_ENV")
+        or os.getenv("ENV")
+        or "dev"
+    ).strip().lower()
+    templates = gate_cfg.get("templates")
+    if isinstance(templates, dict):
+        tpl = templates.get(profile)
+        if isinstance(tpl, dict):
+            resolved = _deep_merge_dict(gate_cfg, tpl)
+            resolved["active_profile"] = profile
+            return resolved
+    resolved = dict(gate_cfg)
+    resolved["active_profile"] = profile
+    return resolved
+
+
+def _evaluate_quality_gate(config: Dict[str, Any], metrics: Dict[str, Any]) -> Dict[str, Any]:
+    gate_cfg = _resolve_quality_gate_config(config)
     if not isinstance(gate_cfg, dict) or not bool(gate_cfg.get("enabled", True)):
-        return None
+        return {"passed": True, "failed_reason": None, "trace": [], "active_profile": None}
     test_metrics = metrics.get("test") if isinstance(metrics.get("test"), dict) else {}
     baseline_metrics = metrics.get("baseline") if isinstance(metrics.get("baseline"), dict) else {}
     reasons: List[str] = []
+    trace: List[Dict[str, Any]] = []
+    missing_metric_policy = str(gate_cfg.get("missing_metric_policy", "fail")).strip().lower()
+    fail_on_missing = missing_metric_policy != "pass"
 
     required_metrics = gate_cfg.get("required_metrics")
     if isinstance(required_metrics, dict):
         for metric_name, threshold in required_metrics.items():
             val = _metric_value(test_metrics, str(metric_name))
             if val is None:
-                reasons.append(f"missing test metric: {metric_name}")
+                message = f"missing test metric: {metric_name}"
+                trace.append({"rule": "required_metric", "metric": metric_name, "status": "fail" if fail_on_missing else "pass", "detail": message})
+                if fail_on_missing:
+                    reasons.append(message)
                 continue
             try:
                 limit = float(threshold)
             except Exception:
-                reasons.append(f"invalid threshold for {metric_name}")
+                message = f"invalid threshold for {metric_name}"
+                trace.append({"rule": "required_metric", "metric": metric_name, "status": "fail", "detail": message})
+                reasons.append(message)
                 continue
             if val > limit:
-                reasons.append(f"{metric_name}={val:.6g} > {limit:.6g}")
+                message = f"{metric_name}={val:.6g} > {limit:.6g}"
+                trace.append({"rule": "required_metric", "metric": metric_name, "status": "fail", "detail": message, "observed": val, "threshold": limit})
+                reasons.append(message)
+            else:
+                trace.append({"rule": "required_metric", "metric": metric_name, "status": "pass", "detail": f"{metric_name}={val:.6g} <= {limit:.6g}", "observed": val, "threshold": limit})
 
     baseline_cfg = gate_cfg.get("baseline")
     if isinstance(baseline_cfg, dict) and bool(baseline_cfg.get("enabled", True)):
@@ -213,22 +257,79 @@ def _evaluate_quality_gate(config: Dict[str, Any], metrics: Dict[str, Any]) -> O
                 test_val = _metric_value(test_metrics, str(metric_name))
                 base_val = _metric_value(baseline_metrics, str(metric_name))
                 if test_val is None or base_val is None:
-                    reasons.append(f"missing baseline compare metric: {metric_name}")
+                    message = f"missing baseline compare metric: {metric_name}"
+                    trace.append({"rule": "baseline_degradation", "metric": metric_name, "status": "fail" if fail_on_missing else "pass", "detail": message})
+                    if fail_on_missing:
+                        reasons.append(message)
                     continue
                 try:
                     tol = float(rel_tol)
                 except Exception:
-                    reasons.append(f"invalid baseline threshold for {metric_name}")
+                    message = f"invalid baseline threshold for {metric_name}"
+                    trace.append({"rule": "baseline_degradation", "metric": metric_name, "status": "fail", "detail": message})
+                    reasons.append(message)
                     continue
                 allow_upper = base_val * (1.0 + tol)
                 if test_val > allow_upper:
-                    reasons.append(
-                        f"{metric_name} degraded: test={test_val:.6g}, baseline={base_val:.6g}, tol={tol:.2%}"
-                    )
+                    message = f"{metric_name} degraded: test={test_val:.6g}, baseline={base_val:.6g}, tol={tol:.2%}"
+                    trace.append({"rule": "baseline_degradation", "metric": metric_name, "status": "fail", "detail": message, "observed": test_val, "baseline": base_val, "max_allowed": allow_upper})
+                    reasons.append(message)
+                else:
+                    trace.append({"rule": "baseline_degradation", "metric": metric_name, "status": "pass", "detail": f"{metric_name} within baseline tolerance", "observed": test_val, "baseline": base_val, "max_allowed": allow_upper})
 
-    if reasons:
-        return "; ".join(reasons)
-    return None
+    return {
+        "passed": len(reasons) == 0,
+        "failed_reason": "; ".join(reasons) if reasons else None,
+        "trace": trace,
+        "active_profile": gate_cfg.get("active_profile"),
+        "missing_metric_policy": missing_metric_policy,
+    }
+
+
+def _quality_gate_threshold_suggestion(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    gate_cfg = _resolve_quality_gate_config(config)
+    suggestion_cfg = gate_cfg.get("suggestion") if isinstance(gate_cfg, dict) else None
+    if not isinstance(suggestion_cfg, dict) or not bool(suggestion_cfg.get("enabled", True)):
+        return None
+    try:
+        recent_runs = int(suggestion_cfg.get("recent_runs", 20))
+    except Exception:
+        recent_runs = 20
+    recent_runs = max(1, recent_runs)
+    try:
+        quantile = float(suggestion_cfg.get("quantile", 0.8))
+    except Exception:
+        quantile = 0.8
+    quantile = min(max(quantile, 0.0), 1.0)
+    metric_names = suggestion_cfg.get("metrics")
+    if not isinstance(metric_names, list) or not metric_names:
+        metric_names = ["MAPE", "RMSE", "MAE"]
+
+    records = list_models(limit=recent_runs)
+    vals: Dict[str, List[float]] = {str(m): [] for m in metric_names}
+    for rec in records:
+        metrics = rec.get("metrics") if isinstance(rec, dict) else None
+        test_metrics = metrics.get("test") if isinstance(metrics, dict) and isinstance(metrics.get("test"), dict) else {}
+        for metric_name in metric_names:
+            v = _metric_value(test_metrics, str(metric_name))
+            if v is not None:
+                vals[str(metric_name)].append(v)
+    suggested_required: Dict[str, float] = {}
+    sample_size: Dict[str, int] = {}
+    for metric_name, arr in vals.items():
+        sample_size[metric_name] = len(arr)
+        if not arr:
+            continue
+        qv = float(pd.Series(arr).quantile(quantile))
+        suggested_required[metric_name] = qv
+
+    return {
+        "recent_runs": recent_runs,
+        "quantile": quantile,
+        "sample_size": sample_size,
+        "suggested_required_metrics": suggested_required,
+        "active_profile": gate_cfg.get("active_profile"),
+    }
 
 
 def build_training_config(
@@ -382,11 +483,8 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
         trainer_params = artifacts.get(f"{str(model_name).lower()}_params") if isinstance(artifacts, dict) else None
         params["training_params"] = trainer_params if isinstance(trainer_params, dict) else {}
         gate = evaluate_training_gate(metrics=metrics if isinstance(metrics, dict) else {}, degraded=degraded)
-        gate_failed_reason = _evaluate_quality_gate(config, metrics if isinstance(metrics, dict) else {})
-        if isinstance(gate_failed_reason, str):
-            parts = [p.strip() for p in gate_failed_reason.split(";") if p.strip()]
-            if parts and all(p.startswith("missing ") for p in parts):
-                gate_failed_reason = None
+        gate_eval = _evaluate_quality_gate(config, metrics if isinstance(metrics, dict) else {})
+        gate_failed_reason = gate_eval.get("failed_reason")
         gate_passed = bool(gate.get("passed", False))
         if gate_failed_reason is not None:
             gate_passed = False
@@ -395,10 +493,18 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
             gate_passed = True
         params["quality_gate"] = gate
         params["gate_passed"] = gate_passed
+        params["gate_decision_trace"] = gate_eval.get("trace", [])
+        params["quality_gate_active_profile"] = gate_eval.get("active_profile")
+        threshold_suggestion = _quality_gate_threshold_suggestion(config)
+        if threshold_suggestion is not None:
+            params["quality_gate_threshold_suggestion"] = threshold_suggestion
         model_stage = "candidate" if gate_passed else "archived"
         if isinstance(artifacts, dict):
             artifacts["training_params_path"] = _persist_training_params(task_id, params["training_params"])
             artifacts["quality_gate"] = gate
+            artifacts["gate_decision_trace"] = gate_eval.get("trace", [])
+            if threshold_suggestion is not None:
+                artifacts["quality_gate_threshold_suggestion"] = threshold_suggestion
         model_record = register_model(
             name=str(model_alias or model_name),
             version=task_id,
@@ -424,6 +530,8 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
             "degraded": degraded,
             "degraded_reason": degraded_reason,
             "gate_failed_reason": gate_failed_reason,
+            "gate_decision_trace": gate_eval.get("trace", []),
+            "quality_gate_threshold_suggestion": threshold_suggestion,
             "fallback_model": fallback_model,
             "model_record": model_record,
             "results": results,

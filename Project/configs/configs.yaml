@@ -212,16 +212,50 @@ baseline:
 
 quality_gate:
   enabled: true
-  required_metrics:
-    MAPE: 0.30
-    RMSE: 100.0
-    MAE: 80.0
-  baseline:
+  profile: dev
+  missing_metric_policy: fail
+  templates:
+    dev:
+      required_metrics:
+        MAPE: 0.35
+        RMSE: 120.0
+        MAE: 90.0
+      baseline:
+        enabled: true
+        max_degradation:
+          MAPE: 0.10
+          RMSE: 0.10
+          MAE: 0.10
+      missing_metric_policy: pass
+    staging:
+      required_metrics:
+        MAPE: 0.30
+        RMSE: 100.0
+        MAE: 80.0
+      baseline:
+        enabled: true
+        max_degradation:
+          MAPE: 0.07
+          RMSE: 0.07
+          MAE: 0.07
+      missing_metric_policy: fail
+    prod:
+      required_metrics:
+        MAPE: 0.25
+        RMSE: 90.0
+        MAE: 70.0
+      baseline:
+        enabled: true
+        max_degradation:
+          MAPE: 0.05
+          RMSE: 0.05
+          MAE: 0.05
+      missing_metric_policy: fail
+  suggestion:
     enabled: true
-    max_degradation:
-      MAPE: 0.05
-      RMSE: 0.05
-      MAE: 0.05
+    recent_runs: 20
+    quantile: 0.8
+    metrics: [MAPE, RMSE, MAE]
 
 # 通用模型配置参数，包括阈值设定与模型默认结构
 

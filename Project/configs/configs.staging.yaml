@@ -5,3 +5,6 @@ debug:
   enabled: false
   print_shapes: false
   print_samples: false
+
+quality_gate:
+  profile: staging
