@@ -58,3 +58,33 @@ groups:
         annotations:
           summary: "High degrade ratio"
           description: "Degrade ratio over the last 15 minutes exceeds 15%."
+
+      - alert: HighDegradeRatioByModel
+        expr: |
+          (
+            sum by (model) (increase(tsf_degrade_total[15m]))
+            /
+            clamp_min(sum by (model) (increase(predict_latency_seconds_count[15m])), 1)
+          ) > 0.20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High degrade ratio by model"
+          description: "Model {{ $labels.model }} degrade ratio exceeds 20% over the last 15 minutes."
+
+      - alert: HighDegradeReasonRatio
+        expr: |
+          (
+            sum by (reason) (increase(tsf_degrade_total[15m]))
+            /
+            clamp_min(sum(increase(tsf_degrade_total[15m])), 1)
+          ) > 0.40
+          and
+          sum by (reason) (increase(tsf_degrade_total[15m])) >= 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Dominant degrade reason ratio is high"
+          description: "Reason {{ $labels.reason }} accounts for >40% of degrade events in the last 15 minutes."

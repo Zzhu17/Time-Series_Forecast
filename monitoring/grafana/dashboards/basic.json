@@ -26,7 +26,12 @@
           "refId": "A"
         }
       ],
-      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 }
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      }
     },
     {
       "type": "stat",
@@ -39,7 +44,12 @@
           "refId": "A"
         }
       ],
-      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 }
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      }
     },
     {
       "type": "stat",
@@ -52,7 +62,12 @@
           "refId": "A"
         }
       ],
-      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 }
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      }
     },
     {
       "type": "stat",
@@ -65,7 +80,12 @@
           "refId": "A"
         }
       ],
-      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 }
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      }
     },
     {
       "type": "timeseries",
@@ -78,7 +98,12 @@
           "refId": "A"
         }
       ],
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 }
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      }
     },
     {
       "type": "timeseries",
@@ -96,7 +121,12 @@
           "refId": "B"
         }
       ],
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 }
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 6
+      }
     },
     {
       "type": "timeseries",
@@ -109,7 +139,12 @@
           "refId": "A"
         }
       ],
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 }
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      }
     },
     {
       "type": "timeseries",
@@ -122,14 +157,86 @@
           "refId": "A"
         }
       ],
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 }
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 14
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Degrade Rate (5m/1h)",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(increase(tsf_degrade_total[5m])) / clamp_min(sum(increase(predict_latency_seconds_count[5m])), 1)",
+          "legendFormat": "5m",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(increase(tsf_degrade_total[1h])) / clamp_min(sum(increase(predict_latency_seconds_count[1h])), 1)",
+          "legendFormat": "1h",
+          "refId": "B"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 22
+      }
+    },
+    {
+      "type": "barchart",
+      "title": "Top Degrade Reasons (1h)",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "topk(8, sum(increase(tsf_degrade_total[1h])) by (reason))",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 22
+      }
+    },
+    {
+      "type": "piechart",
+      "title": "Degrade Distribution by Model (1h)",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "sum(increase(tsf_degrade_total[1h])) by (model)",
+          "legendFormat": "{{model}}",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 30
+      }
     }
   ],
   "schemaVersion": 38,
   "style": "dark",
-  "tags": ["tsf", "observability"],
-  "templating": { "list": [] },
-  "time": { "from": "now-6h", "to": "now" },
+  "tags": [
+    "tsf",
+    "observability"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
   "timepicker": {},
   "timezone": "",
   "title": "TS Forecast - Ops",

@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Query, Response
 
-from utils.metrics import metrics_enabled, render_metrics
+from utils.metrics import get_degrade_summary, metrics_enabled, render_metrics
 
 router = APIRouter()
 
@@ -15,3 +15,8 @@ def metrics():
 @router.get("/metrics/degrade_metric")
 def degrade_metric_name():
     return {"metric": "tsf_degrade_total{model,reason}"}
+
+
+@router.get("/metrics/degrade_summary")
+def degrade_summary(window_minutes: int = Query(default=60, ge=1, le=1440), limit: int = Query(default=5, ge=1, le=20)):
+    return get_degrade_summary(window_minutes=window_minutes, limit=limit)
