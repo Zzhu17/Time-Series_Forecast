@@ -29,3 +29,9 @@ The system is a time-series forecasting platform with:
 1. `services.train_service.run_training_task`：接收训练任务并标准化上下文。
 2. `services.pipeline.run_train_predict_pipeline`：执行统一 train/predict pipeline。
 3. `models.registry.TRAINER_REGISTRY`：按模型键选择 trainer/adaptor 实现。
+
+## Registry 约束（低维护/低漂移）
+
+- `SUPPORTED_MODELS` 是模型元数据单一来源（single source of truth）。
+- `MODEL_CATALOG` 由 `SUPPORTED_MODELS` 派生，用于历史兼容，避免重复维护。
+- hybrid 模型名称约定为 `<residual_model>+<base_model>`（例如 `xgboost+informer`）。

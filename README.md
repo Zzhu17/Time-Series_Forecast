@@ -29,6 +29,13 @@ The Streamlit UI calls the FastAPI service; keep the API running at the URL show
 ### PR Checklist（文档一致性）
 
 - [ ] 若变更训练入口/调度链路，已同步更新 `README.md`、`docs/architecture.md` 与 `Project/configs/configs.yaml` 的相关说明。
+- [ ] 若变更 `Project/models/registry.py`，已完成 registry 变更检查（`SUPPORTED_MODELS`/catalog 一致、capability 语义无冲突、hybrid 命名遵循 `<residual_model>+<base_model>`）。
+
+### 模型注册命名约定（Hybrid）
+
+- hybrid 模型统一使用小写且以 `+` 连接：`<residual_model>+<base_model>`。
+- 示例：`xgboost+informer`、`xgboost+lstm`。
+- `SUPPORTED_MODELS` 作为单一元数据源；catalog 信息由其派生，避免双处维护导致漂移。
 
 ## Repo hygiene (GitHub-friendly)
 
