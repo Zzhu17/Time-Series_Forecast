@@ -26,16 +26,9 @@ jobs:
       - name: Check test environment
         run: ./scripts/check_test_env.sh
       - name: Tests (minimal, allow skips)
-        run: |
-          set -o pipefail
-          PYTHONPATH=Project pytest -q -rs tests | tee pytest-minimal.log
+        run: scripts/run_test_matrix.sh minimal
       - name: Record skip reasons
-        run: |
-          {
-            echo "# Minimal skip summary"
-            grep -E '^SKIPPED ' pytest-minimal.log || echo "No skips reported."
-          } > skip-reasons-minimal.txt
-          cat skip-reasons-minimal.txt
+        run: cat skip-reasons-minimal.txt
       - name: Upload minimal skip report
         uses: actions/upload-artifact@v4
         with:
@@ -65,18 +58,6 @@ jobs:
           python -m pip install -r Project/requirements.txt
           python -m pip install -r requirements-ci.txt
       - name: Tests (full)
-        run: |
-          set -o pipefail
-          PYTHONPATH=Project pytest -q -rs tests | tee pytest-full.log
-      - name: Enforce skip policy for full matrix
-        run: |
-          if grep -qE '^SKIPPED ' pytest-full.log; then
-            bad_skips=$(grep -E '^SKIPPED ' pytest-full.log | grep -vc 'TEST_MATRIX_PLATFORM_SKIP:' || true)
-            if [ "${bad_skips}" -gt 0 ]; then
-              echo "Found non-platform skips in full matrix: ${bad_skips}"
-              grep -E '^SKIPPED ' pytest-full.log
-              exit 1
-            fi
-          fi
+        run: scripts/run_test_matrix.sh full
       - name: Model tests (full)
-        run: make test-models
+        run: scripts/run_test_matrix.sh models
