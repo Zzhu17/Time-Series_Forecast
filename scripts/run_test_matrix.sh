@@ -3,6 +3,14 @@ set -euo pipefail
 
 mode="${1:-minimal}"
 
+emit_scenario_meta() {
+  local scenario="$1"
+  {
+    echo "scenario=${scenario}"
+    echo "timestamp_utc=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  } > test-matrix-scenario.txt
+}
+
 usage() {
   cat <<'USAGE'
 Usage: scripts/run_test_matrix.sh [minimal|full|models]
@@ -14,6 +22,7 @@ USAGE
 }
 
 run_minimal() {
+  emit_scenario_meta "minimal"
   ./scripts/check_test_env.sh --strict
   set -o pipefail
   PYTHONPATH=Project pytest -q -rs tests | tee pytest-minimal.log
@@ -24,6 +33,7 @@ run_minimal() {
 }
 
 run_full() {
+  emit_scenario_meta "full"
   ./scripts/check_test_env.sh --strict
   set -o pipefail
   PYTHONPATH=Project pytest -q -rs tests | tee pytest-full.log
@@ -38,6 +48,7 @@ run_full() {
 }
 
 run_models() {
+  emit_scenario_meta "models"
   ./scripts/check_test_env.sh --strict
   make test-models
 }

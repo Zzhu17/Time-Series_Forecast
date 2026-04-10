@@ -34,6 +34,24 @@ jobs:
         with:
           name: minimal-skip-reasons
           path: skip-reasons-minimal.txt
+      - name: Build failure bundle (minimal)
+        if: failure()
+        run: ./scripts/build_failure_bundle.sh minimal
+      - name: Upload failure bundle (minimal)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-bundle-minimal-${{ github.run_id }}
+          path: failure_bundle/
+      - name: Print failure artifact links and triage template
+        if: failure()
+        run: |
+          run_url="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "Failure artifacts: ${run_url}#artifacts"
+          echo "Primary troubleshooting suggestion template:"
+          echo "1) 环境层(Environment): 检查 pip-freeze.txt 与 check_test_env 输出是否缺包或版本冲突。"
+          echo "2) 代码层(Code): 对照 pytest.log 第一处失败堆栈和改动文件定位回归点。"
+          echo "3) 策略层(Policy): 查 quality-gate-report 与 skip-reasons 是否因门禁/skip 策略导致失败。"
       - name: Verify tag matches VERSION
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
@@ -61,3 +79,21 @@ jobs:
         run: scripts/run_test_matrix.sh full
       - name: Model tests (full)
         run: scripts/run_test_matrix.sh models
+      - name: Build failure bundle (full)
+        if: failure()
+        run: ./scripts/build_failure_bundle.sh full
+      - name: Upload failure bundle (full)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-bundle-full-${{ github.run_id }}
+          path: failure_bundle/
+      - name: Print failure artifact links and triage template
+        if: failure()
+        run: |
+          run_url="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "Failure artifacts: ${run_url}#artifacts"
+          echo "Primary troubleshooting suggestion template:"
+          echo "1) 环境层(Environment): 检查 pip-freeze.txt 与 check_test_env 输出是否缺包或版本冲突。"
+          echo "2) 代码层(Code): 对照 pytest.log 第一处失败堆栈和改动文件定位回归点。"
+          echo "3) 策略层(Policy): 查 quality-gate-report 与 skip-reasons 是否因门禁/skip 策略导致失败。"
