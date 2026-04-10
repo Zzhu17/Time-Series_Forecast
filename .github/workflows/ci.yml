@@ -9,13 +9,59 @@ on:
     branches: [main, dev]
     tags: ["v*"]
   pull_request:
+  schedule:
+    - cron: "0 2 * * *"
 
 permissions:
   contents: read
   actions: read
 
 jobs:
-  test-minimal:
+  classify-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.scope.outputs.docs_only }}
+      force_full: ${{ steps.scope.outputs.force_full }}
+      force_models: ${{ steps.scope.outputs.force_models }}
+      run_minimal: ${{ steps.scope.outputs.run_minimal }}
+      run_lint_docs: ${{ steps.scope.outputs.run_lint_docs }}
+      strategy_source: ${{ steps.scope.outputs.strategy_source }}
+      reason: ${{ steps.scope.outputs.reason }}
+      changed_files_json: ${{ steps.scope.outputs.changed_files_json }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Classify changed paths
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            python scripts/ci_changed_scope.py --event-name schedule --write-github-output
+          elif [ -n "${BASE_SHA:-}" ]; then
+            python scripts/ci_changed_scope.py \
+              --event-name "$EVENT_NAME" \
+              --base "$BASE_SHA" \
+              --head "$HEAD_SHA" \
+              --write-github-output
+          else
+            python scripts/ci_changed_scope.py \
+              --event-name "$EVENT_NAME" \
+              --write-github-output
+          fi
+      - name: Print trigger strategy source
+        run: |
+          echo "Trigger strategy source: ${{ steps.scope.outputs.strategy_source }}"
+          echo "Reason: ${{ steps.scope.outputs.reason }}"
+          echo "Changed files: ${{ steps.scope.outputs.changed_files_json }}"
+
+  lint-docs:
+    needs: classify-changes
+    if: needs.classify-changes.outputs.run_lint_docs == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,6 +94,44 @@ jobs:
         run: ruff check .
       - name: Type check
         run: PYTHONPATH=Project mypy Project tests
+      - name: Docs sanity check
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          markdown_files = [p for p in Path('.').rglob('*.md') if p.is_file()]
+          for path in markdown_files:
+              path.read_text(encoding='utf-8')
+          print(f"Checked {len(markdown_files)} markdown files for UTF-8 readability")
+          PY
+      - name: Verify tag matches VERSION
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          version="v$(cat VERSION)"
+          if [ "$tag" != "$version" ]; then
+            echo "Tag $tag does not match VERSION $version"
+            exit 1
+          fi
+
+  test-minimal:
+    needs: classify-changes
+    if: needs.classify-changes.outputs.run_minimal == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+      - name: Install minimal dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-ci.txt
+      - name: Print trigger strategy source
+        run: |
+          echo "Trigger strategy source: ${{ needs.classify-changes.outputs.strategy_source }}"
+          echo "Reason: ${{ needs.classify-changes.outputs.reason }}"
       - name: Check test environment
         run: ./scripts/check_test_env.sh
       - name: Tests (minimal, allow skips)
@@ -178,6 +262,8 @@ jobs:
           fi
 
   test-full:
+    needs: classify-changes
+    if: needs.classify-changes.outputs.force_full == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
