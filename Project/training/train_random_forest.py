@@ -6,6 +6,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 from utils.array_utils import clean_and_unify_arrays
 from models.random_forest import build_random_forest
+from training.params_schema import build_training_params
 
 try:  # pragma: no cover - optional dependency
     import joblib  # type: ignore
@@ -111,13 +112,16 @@ def train_random_forest_model(df: pd.DataFrame, config):
         "val_len": int(len(y_val)),
         "test_len": int(len(y_test)),
     }
-    training_params = {
-        "model": "randomforest",
-        "split": split,
-        "fit_status": "trained",
-        "n_lags": int(n_lags),
-        **(best_params if isinstance(best_params, dict) else {}),
-    }
+    best_params = best_params if isinstance(best_params, dict) else {}
+    data_signature = {"rows": int(len(df)), "time_col": time_col, "value_col": value_col, "feature_cols": list(feature_cols)}
+    training_params = build_training_params(
+        model="randomforest",
+        split=split,
+        core_hparams={"n_lags": int(n_lags), **best_params},
+        runtime={"fit_status": "trained"},
+        data_signature=data_signature,
+        legacy_fields={"fit_status": "trained", "n_lags": int(n_lags), **best_params},
+    )
 
     # 9) 将训练参数暴露到 artifacts，供 app 的“本次实际参数”面板读取
     arts["randomforest_params"] = dict(training_params)

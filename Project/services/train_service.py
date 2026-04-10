@@ -16,12 +16,14 @@ from services.pipeline_loader import load_pipeline_module
 from services.snapshot import cacheable_results
 from services.training_payloads import normalize_training_payload
 from utils.metrics import observe_degrade, observe_task
+from training.params_schema import build_training_params
 
 
 def _training_params_summary(normalized: Dict[str, Any], *, task_id: str) -> Dict[str, Any]:
-    return {
+    model_name = str(normalized.get("model_name") or "")
+    legacy = {
         "run_id": task_id,
-        "model_name": normalized.get("model_name"),
+        "model_name": model_name,
         "model_alias": normalized.get("model_alias"),
         "time_col": normalized.get("time_col"),
         "value_col": normalized.get("value_col"),
@@ -30,6 +32,18 @@ def _training_params_summary(normalized: Dict[str, Any], *, task_id: str) -> Dic
         "allow_degrade": bool(normalized.get("allow_degrade", False)),
         "residual_modeling": normalized.get("residual_modeling"),
     }
+    return build_training_params(
+        model=model_name,
+        split={"train_len": 0, "val_len": 0, "test_len": 0},
+        core_hparams={"residual_modeling": normalized.get("residual_modeling")},
+        runtime={"fit_status": "not_executed", "device": normalized.get("device", "cpu")},
+        data_signature={
+            "time_col": normalized.get("time_col"),
+            "value_col": normalized.get("value_col"),
+            "feature_cols": list(normalized.get("feature_cols") or []),
+        },
+        legacy_fields=legacy,
+    )
 
 
 def _artifact_dir_for_task(task_id: str) -> Path:

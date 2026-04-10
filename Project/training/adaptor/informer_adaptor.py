@@ -1,6 +1,7 @@
 import pandas as pd
 import random
 import numpy as np
+from training.params_schema import build_training_params
 
 def _apply_informer_smoke_config(config: dict) -> None:
     training_cfg = (config.get("training") or {})
@@ -99,17 +100,21 @@ def train_informer_model_7tuple(df, config):
     }
     split_info = data_blk.get("split") if isinstance(data_blk.get("split"), dict) else {}
     # 第7位固定 training_params(dict)
-    training_params = {
-        "model": "informer",
-        "model_name": "informer",
-        "split": {
-            "train_len": int(split_info.get("train_len") or max(0, len(df) - (len(val_true) if val_true is not None else 0) - (len(test_true) if test_true is not None else 0))),
-            "val_len": int(split_info.get("val_len") or (len(val_true) if val_true is not None else 0)),
-            "test_len": int(split_info.get("test_len") or (len(test_true) if test_true is not None else 0)),
-        },
-        "fit_status": "trained",
-        "epochs": int(((config.get("model_config") or {}).get("Informer") or {}).get("train_epochs", 0)),
+    split = {
+        "train_len": int(split_info.get("train_len") or max(0, len(df) - (len(val_true) if val_true is not None else 0) - (len(test_true) if test_true is not None else 0))),
+        "val_len": int(split_info.get("val_len") or (len(val_true) if val_true is not None else 0)),
+        "test_len": int(split_info.get("test_len") or (len(test_true) if test_true is not None else 0)),
     }
+    epochs = int(((config.get("model_config") or {}).get("Informer") or {}).get("train_epochs", 0))
+    data_signature = {"rows": int(len(df)), "time_col": config.get("time_col") or config.get("default", {}).get("time_col"), "value_col": config.get("value_col") or config.get("default", {}).get("value_col")}
+    training_params = build_training_params(
+        model="informer",
+        split=split,
+        core_hparams={"epochs": epochs},
+        runtime={"fit_status": "trained", "seed": seed},
+        data_signature=data_signature,
+        legacy_fields={"model_name": "informer", "fit_status": "trained", "epochs": epochs},
+    )
     artifacts["training_params"] = dict(training_params)
     test_forecast_df = data_blk.get("test_dense") if isinstance(data_blk.get("test_dense"), pd.DataFrame) else data_blk.get("test_result_df")
 

@@ -2,6 +2,7 @@
 import pandas as pd
 import numpy as np
 from typing import Tuple, Any, cast
+from training.params_schema import build_training_params
 
 def train_prophet_model_7tuple(df, config):
     # 延迟导入避免循环依赖
@@ -13,13 +14,16 @@ def train_prophet_model_7tuple(df, config):
 
     def _to_training_params(raw_params, train_len=0, val_len=0, test_len=0):
         params = raw_params if isinstance(raw_params, dict) else {}
-        out = {
-            "model": "prophet",
-            "model_name": "prophet",
-            "split": {"train_len": int(train_len), "val_len": int(val_len), "test_len": int(test_len)},
-            "fit_status": "trained",
-            **params,
-        }
+        split = {"train_len": int(train_len), "val_len": int(val_len), "test_len": int(test_len)}
+        data_signature = {"rows": int(len(df)), "time_col": config.get("time_col") or config.get("default", {}).get("time_col"), "value_col": config.get("value_col") or config.get("default", {}).get("value_col")}
+        out = build_training_params(
+            model="prophet",
+            split=split,
+            core_hparams=params,
+            runtime={"fit_status": "trained"},
+            data_signature=data_signature,
+            legacy_fields={"fit_status": "trained", "model_name": "prophet", **params},
+        )
         artifacts["training_params"] = dict(out)
         return out
 
