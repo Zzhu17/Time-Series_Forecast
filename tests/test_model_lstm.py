@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-pytest.importorskip("torch")
+pytest.importorskip("torch", reason="TEST_MATRIX_OPTIONAL_DEP_MISSING: torch")
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = ROOT / "Project"

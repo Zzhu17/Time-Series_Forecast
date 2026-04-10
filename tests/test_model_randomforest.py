@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-pytest.importorskip("optuna")
+pytest.importorskip("optuna", reason="TEST_MATRIX_OPTIONAL_DEP_MISSING: optuna")
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = ROOT / "Project"
