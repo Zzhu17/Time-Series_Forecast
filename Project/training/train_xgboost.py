@@ -7,6 +7,7 @@ import pandas as pd
 
 from models.xgboost import build_xgboost_regressor
 from utils.array_utils import clean_and_unify_arrays
+from training.params_schema import build_training_params
 
 
 def _split_lengths(n: int, cfg: dict) -> Tuple[int, int, int]:
@@ -114,12 +115,14 @@ def train_xgboost_model(df: pd.DataFrame, config: dict):
         test_true_u, test_pred_u, _ = clean_and_unify_arrays(test_true, test_pred)
         data_blk["val_dense"] = pd.DataFrame({"y_true": val_true_u, "yhat": val_pred_u})
         data_blk["test_dense"] = pd.DataFrame({"y_true": test_true_u, "yhat": test_pred_u})
-        training_params = {
-            "model": "xgboost",
-            "split": {"train_len": int(t_len), "val_len": int(v_len), "test_len": int(te_len)},
-            "fit_status": "baseline_persistence",
-            "features": [],
-        }
+        training_params = build_training_params(
+            model="xgboost",
+            split={"train_len": int(t_len), "val_len": int(v_len), "test_len": int(te_len)},
+            core_hparams={"features": []},
+            runtime={"fit_status": "baseline_persistence"},
+            data_signature={"rows": int(len(df)), "time_col": time_col, "value_col": value_col, "feature_cols": list(all_feature_cols)},
+            legacy_fields={"fit_status": "baseline_persistence", "features": []},
+        )
         artifacts["training_params"] = dict(training_params)
         return val_true_u, val_pred_u, test_true_u, test_pred_u, None, None, training_params
 
@@ -203,10 +206,7 @@ def train_xgboost_model(df: pd.DataFrame, config: dict):
         except Exception:
             pass
 
-    training_params: Dict[str, Any] = {
-        "model": "xgboost",
-        "split": {"train_len": int(t_len), "val_len": int(v_len), "test_len": int(te_len)},
-        "fit_status": "trained",
+    core_hparams: Dict[str, Any] = {
         "feature_cols": list(feature_cols),
         "early_stopping_rounds": early_stopping_rounds,
     }
@@ -224,11 +224,19 @@ def train_xgboost_model(df: pd.DataFrame, config: dict):
         "n_jobs",
     ):
         if k in mcfg:
-            training_params[k] = mcfg.get(k)
+            core_hparams[k] = mcfg.get(k)
     try:
-        training_params["best_iteration"] = int(getattr(model, "best_iteration", -1))
+        core_hparams["best_iteration"] = int(getattr(model, "best_iteration", -1))
     except Exception:
         pass
+    training_params: Dict[str, Any] = build_training_params(
+        model="xgboost",
+        split={"train_len": int(t_len), "val_len": int(v_len), "test_len": int(te_len)},
+        core_hparams=core_hparams,
+        runtime={"fit_status": "trained"},
+        data_signature={"rows": int(len(df)), "time_col": time_col, "value_col": value_col, "feature_cols": list(all_feature_cols)},
+        legacy_fields={"fit_status": "trained", **core_hparams},
+    )
 
     artifacts["training_params"] = dict(training_params)
     return val_true_u, val_pred_u, test_true_u, test_pred_u, model, None, training_params

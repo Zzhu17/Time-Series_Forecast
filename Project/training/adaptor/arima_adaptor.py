@@ -1,19 +1,27 @@
 import pandas as pd
 from typing import Tuple, Any, cast
+from training.params_schema import build_training_params
 
 def train_arima_model_7tuple(df, config):
     from training.train_arima import train_arima_model
     artifacts = config.setdefault("artifacts", {})
 
     def _to_training_params(raw_params, train_len=0, val_len=0, test_len=0):
-        out = {
-            "model": "arima",
-            "split": {"train_len": int(train_len), "val_len": int(val_len), "test_len": int(test_len)},
-            "fit_status": "trained",
-        }
+        split = {"train_len": int(train_len), "val_len": int(val_len), "test_len": int(test_len)}
+        data_signature = {"rows": int(len(df)), "time_col": config.get("time_col") or config.get("default", {}).get("time_col"), "value_col": config.get("value_col") or config.get("default", {}).get("value_col")}
+        out = build_training_params(
+            model="arima",
+            split=split,
+            core_hparams={},
+            runtime={"fit_status": "trained"},
+            data_signature=data_signature,
+            legacy_fields={"fit_status": "trained"},
+        )
         if isinstance(raw_params, dict):
+            out["core_hparams"].update(raw_params)
             out.update(raw_params)
         elif raw_params is not None:
+            out["core_hparams"]["order"] = raw_params
             out["order"] = raw_params
         artifacts["training_params"] = dict(out)
         return out

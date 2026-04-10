@@ -19,6 +19,21 @@ Date: 2026-04-08
   - `training_params.json` file under run artifact dir (when available).
 - Model catalog and runtime registry are aligned on a single shared definition.
 
+## 跨模型参数可比性（Cross-model Parameter Comparability）
+- 已定义并落地统一训练参数 schema，核心字段固定为：
+  - `model`
+  - `split`
+  - `core_hparams`
+  - `runtime`
+  - `data_signature`
+  - `trainer_version`
+- 各模型 adaptor/trainer（ARIMA、Prophet、Informer、LSTM、RandomForest、XGBoost）均已映射到上述同名字段，语义一致：
+  - `split`：统一为 `train_len/val_len/test_len`
+  - `core_hparams`：模型核心超参（可用于 ablation 对比）
+  - `runtime`：训练状态与运行时信息（如 `fit_status`、`seed`）
+  - `data_signature`：数据规模与关键信号（如列名、特征列）
+- 新增 schema 验证测试：每个模型训练后均执行统一 schema 校验，确保产物可直接进入自动 leaderboard、ablation、回归对比流程，无需手工对齐字段。
+
 ## Risks / Follow-ups
 - Heavy model families (Prophet / Torch / XGBoost / ARIMA optional deps) still depend on environment package availability.
 - Prophet rolling CV can be computationally expensive; should remain disabled by default in production.
