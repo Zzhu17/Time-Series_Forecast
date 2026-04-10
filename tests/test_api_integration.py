@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("httpx")
+pytest.importorskip("httpx", reason="TEST_MATRIX_OPTIONAL_DEP_MISSING: httpx")
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]

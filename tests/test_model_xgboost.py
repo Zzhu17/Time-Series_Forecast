@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-pytest.importorskip("xgboost")
+pytest.importorskip("xgboost", reason="TEST_MATRIX_OPTIONAL_DEP_MISSING: xgboost")
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = ROOT / "Project"
