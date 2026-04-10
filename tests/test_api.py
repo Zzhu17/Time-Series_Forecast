@@ -33,6 +33,16 @@ def test_metrics_endpoint():
     assert resp.status_code in (200, 503)
 
 
+def test_degrade_summary_endpoint():
+    resp = client.get("/metrics/degrade_summary?window_minutes=30&limit=3")
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["window_minutes"] == 30
+    assert "total_degrade" in payload
+    assert "top_models" in payload
+    assert "top_reasons" in payload
+
+
 def test_alerts_webhook():
     payload = {"receiver": "api-webhook", "status": "firing", "alerts": [{"labels": {"alertname": "Test"}}]}
     resp = client.post("/alerts", json=payload)

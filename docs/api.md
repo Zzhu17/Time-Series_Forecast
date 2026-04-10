@@ -7,6 +7,11 @@ Base URL: `http://localhost:8000`
 - `GET /health/live`
 - `GET /health/ready`
 
+## Observability
+- `GET /metrics`
+- `GET /metrics/degrade_metric`
+- `GET /metrics/degrade_summary?window_minutes=60&limit=5`
+
 ## Models
 - `GET /models`
 - `GET /models/registry`
