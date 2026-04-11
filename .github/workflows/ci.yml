@@ -1,9 +1,5 @@
 name: CI
 
-permissions:
-  contents: read
-  pull-requests: write
-
 on:
   push:
     branches: [main, dev]
@@ -15,6 +11,7 @@ on:
 permissions:
   contents: read
   actions: read
+  pull-requests: write
 
 jobs:
   classify-changes:
