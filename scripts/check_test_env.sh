@@ -34,6 +34,7 @@ done
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
 REQUIRED_MODULES="${CHECK_TEST_ENV_REQUIRED_MODULES:-pytest}"
+MIN_PYTHON="${CHECK_TEST_ENV_MIN_PYTHON:-3.10}"
 
 which_python="$(command -v "${PYTHON_BIN}" || true)"
 python_version="$("${PYTHON_BIN}" -V 2>&1 || true)"
@@ -43,11 +44,31 @@ echo "[check_test_env] mode=${mode}"
 echo "[check_test_env] which python: ${which_python:-<not found>}"
 echo "[check_test_env] python -V: ${python_version:-<unavailable>}"
 echo "[check_test_env] sys.executable: ${sys_executable:-<unavailable>}"
+echo "[check_test_env] minimum python: ${MIN_PYTHON}"
 
 if [ -z "$which_python" ]; then
   echo "[check_test_env] python interpreter not found: ${PYTHON_BIN}" >&2
   [ "$mode" = "soft" ] && exit 0
   exit 1
+fi
+
+if ! "${PYTHON_BIN}" - "$MIN_PYTHON" <<'PY' >/dev/null 2>&1
+import sys
+
+parts = tuple(int(part) for part in sys.argv[1].split("."))
+raise SystemExit(0 if sys.version_info[: len(parts)] >= parts else 1)
+PY
+then
+  prefix="[check_test_env][ERROR]"
+  if [ "$mode" = "soft" ]; then
+    prefix="[check_test_env][WARN]"
+  fi
+
+  echo "${prefix} Python ${MIN_PYTHON}+ is required for this repository." >&2
+  echo "${prefix} Interpreter used for probing: ${sys_executable:-${which_python}}" >&2
+  if [ "$mode" = "strict" ]; then
+    exit 1
+  fi
 fi
 
 missing_modules=()

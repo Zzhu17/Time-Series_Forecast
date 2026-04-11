@@ -1,5 +1,5 @@
 [tool.ruff]
-target-version = "py39"
+target-version = "py310"
 line-length = 120
 exclude = ["Project/artifacts", "Project/output", ".venv", "venv", ".tmp", ".cache"]
 
@@ -43,7 +43,7 @@ name = "time-series-forecast"
 dynamic = ["version"]
 description = "Streamlit + FastAPI playground for time-series forecasting."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "Zipeng Zhu" }]
 

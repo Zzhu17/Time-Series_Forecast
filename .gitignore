@@ -15,14 +15,21 @@ __pycache__/
 
 # Environments
 .venv/
+.venv*/
 venv/
-.env/
+.env
+.env.*
+!.env.example
+!.env.dev.example
+!.env.staging.example
+!.env.prod.example
 
 # Project outputs (do not version training artifacts)
 artifacts/
 Project/artifacts/
 Project/output/
 Project/logs/
+Project/tmp/
 logs/
 Project/Data/processed/
 Project/Data/bronze/
@@ -45,11 +52,20 @@ Project/Data/predictions/
 # Local tool temp/cache
 .tmp/
 .cache/
+output/
+failure_bundle/
+prev-main-artifact.zip
+skip-metrics-main-prev.json
 
 # Frontend
 Project/frontend/node_modules/
 Project/frontend/dist/
 
+# Terraform
+.terraform/
+terraform/aws/.terraform/
+
 # Airflow
 Project/airflow/logs/
 Project/airflow/__pycache__/
+Project/airflow/airflow.db

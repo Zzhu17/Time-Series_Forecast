@@ -1,0 +1,65 @@
+#!/bin/bash
+set -euxo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+
+apt-get update
+apt-get install -y \
+  ca-certificates \
+  curl \
+  docker.io \
+  docker-compose-plugin \
+  git \
+  awscli
+
+systemctl enable --now docker
+
+APP_DIR="${app_dir}"
+REPO_DIR="${app_dir}/repo"
+
+mkdir -p "$${APP_DIR}" "$${APP_DIR}/artifacts" "$${APP_DIR}/Project/output"
+
+if [ ! -d "$${REPO_DIR}/.git" ]; then
+  git clone --branch "${git_ref}" --single-branch "${repository_clone_url}" "$${REPO_DIR}"
+else
+  git -C "$${REPO_DIR}" fetch --all --tags
+  git -C "$${REPO_DIR}" checkout "${git_ref}"
+  git -C "$${REPO_DIR}" reset --hard "origin/${git_ref}" || true
+fi
+
+cat > "$${REPO_DIR}/.env.prod" <<EOF
+TSF_ENV=${environment}
+TSF_API_URL=
+TSF_API_TOKEN=${tsf_api_token}
+API_PORT=8000
+UI_PORT=8501
+VITE_API_URL=
+DATABASE_URL=${database_url}
+CELERY_ENABLED=${celery_enabled}
+CELERY_BROKER_URL=${celery_broker_url}
+CELERY_RESULT_BACKEND=${celery_result_backend}
+REDIS_PORT=6379
+EOF
+
+cat > /etc/systemd/system/tsf-compose.service <<EOF
+[Unit]
+Description=Time Series Forecast production stack
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=$${REPO_DIR}
+Environment=COMPOSE_PROJECT_NAME=${compose_project_name}
+ExecStart=/usr/bin/docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+ExecStop=/usr/bin/docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml down
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable tsf-compose.service
+systemctl start tsf-compose.service

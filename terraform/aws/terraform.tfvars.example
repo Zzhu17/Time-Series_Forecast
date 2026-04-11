@@ -1,0 +1,9 @@
+aws_region             = "us-east-1"
+environment            = "prod"
+artifacts_bucket_name  = "replace-with-globally-unique-bucket-name"
+admin_cidr_blocks      = ["203.0.113.10/32"]
+app_ingress_cidrs      = ["0.0.0.0/0"]
+instance_type          = "t3.large"
+ssh_key_name           = "replace-with-your-ec2-keypair"
+repository_ref         = "main"
+tsf_api_token          = ""

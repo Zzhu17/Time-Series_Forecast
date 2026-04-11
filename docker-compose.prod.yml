@@ -13,11 +13,11 @@ services:
       context: .
       dockerfile: Dockerfile.frontend
       args:
-        VITE_API_URL: ${VITE_API_URL:-http://localhost:8002}
+        VITE_API_URL: ${VITE_API_URL:-}
     env_file:
       - .env.prod
     ports:
-      - "8080:80"
+      - "80:80"
     depends_on:
       - api
 
@@ -38,5 +38,4 @@ services:
       - ./Project/output:/app/Project/output
 
   redis:
-    ports:
-      - "6381:6379"
+    ports: []

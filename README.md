@@ -1,11 +1,14 @@
 # Time-Series_Forecast
 
-Streamlit-based playground for time-series forecasting.
+Production-oriented time-series forecasting platform with FastAPI, Streamlit, React, async workers, CI, and AWS infrastructure.
 
 ## Quickstart
 
 ```bash
+python3.10 -m venv .venv
+source .venv/bin/activate
 pip install -r Project/requirements.txt
+cp .env.dev.example .env
 PYTHONPATH=Project uvicorn api.app:app --reload --port 8000
 streamlit run Project/app.py
 ```
@@ -39,16 +42,21 @@ The Streamlit UI calls the FastAPI service; keep the API running at the URL show
 
 ## Repo hygiene (GitHub-friendly)
 
-This repo generates training outputs locally (models, scalers, plots, snapshots). They are intentionally ignored by git:
+This repo generates training outputs and runtime state locally. They are intentionally ignored by git:
 
+- `Project/tmp/`
 - `Project/artifacts/`
 - `Project/output/`
+- `Project/airflow/airflow.db`
+- `.env*` except checked-in `*.example` templates
 
 If you previously committed large files (e.g. `Project/artifacts/informer_model.pth`), they were removed from tracking and added to `.gitignore`.
 
 ## Development
 
+- Python baseline: `3.10+`
 - Install lightweight dev tools: `pip install -r requirements-dev.txt`
+- Environment templates: `.env.dev.example`, `.env.staging.example`, `.env.prod.example`
 - 测试依赖最小集合（可导入即可运行测试收集）：`pytest`、`httpx`、`fastapi`
   - 快速校验命令：`./scripts/check_test_env.sh`
 - Run fast tests (no heavy deps required): `PYTHONPATH=Project pytest -q tests`
@@ -88,10 +96,10 @@ This repo includes minimal package metadata in `pyproject.toml` and uses `VERSIO
   - `GET /health/live` (liveness)
   - `GET /health/ready` (readiness: DB/config/storage)
   - `GET /metrics` (Prometheus metrics)
-  - `GET /models` (currently lists available model keys)
+  - `GET /models` (lists the supported model catalog derived from `SUPPORTED_MODELS`)
   - `POST /predict_online_file` (Informer online rolling inference; accepts CSV upload)
-  - `POST /predict` (supports registry-based `model_id`/`model_version` for Informer/XGBoost; baseline persistence fallback is used if no artifacts)
-- `POST /train` (creates async task; uses SQLite/`DATABASE_URL` for task metadata; currently uses XGBoost if artifacts exist else baseline)
+  - `POST /predict` (supports registry-based `model_id`/`model_version`; when artifacts or optional deps are unavailable and `allow_degrade=true`, the service can degrade to a baseline predictor and records the degraded reason)
+- `POST /train` (creates async task; uses SQLite/`DATABASE_URL` for task metadata and the registry-backed training pipeline)
 - `POST /train_file` (CSV upload → async training task; feature_cols must exist or be recomputable)
   - `POST /train_file_sync` (CSV upload → sync train+predict; returns metrics/plot_data)
   - `POST /train_file_streamlit` (CSV upload → sync train+predict; Streamlit payload)
@@ -129,29 +137,31 @@ This repo includes minimal package metadata in `pyproject.toml` and uses `VERSIO
 ## Docker (recommended)
 
 ```bash
-cp .env.example .env
+cp .env.dev.example .env
 docker compose up --build
 ```
 
 This starts API + Streamlit UI + React UI + Redis + a Celery worker (async training queue).
 To disable the queue and run training in-process, set `CELERY_ENABLED=0` in your env file.
 
-API: `http://localhost:8000`  
-UI: `http://localhost:8501`
-React UI (served by API): `http://localhost:8000/ui`
+API: `http://localhost:8010`  
+UI: `http://localhost:8511`
+React UI (served by API): `http://localhost:8010/ui`
 
 ### Staging / Prod (compose overrides)
 
 ```bash
 # staging
+cp .env.staging.example .env.staging
 docker compose --env-file .env.staging -f docker-compose.yml -f docker-compose.staging.yml up --build
 
 # prod
+cp .env.prod.example .env.prod
 docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up --build
 ```
 
 Staging ports: API `8001`, UI `8502`, Redis `6380`  
-Prod ports: API `8002`, UI `8503`, Redis `6381`, React (Nginx) `8080`
+Prod ports: React (Nginx) `80`, admin API `8002`, admin Streamlit `8503`
 
 ## Observability Demo (Prometheus + Grafana)
 
@@ -177,10 +187,25 @@ Prometheus alerts:
 - Alertmanager config: `monitoring/alertmanager.yml` (webhook -> `/alerts`)
 - Includes `DegradeRateHigh` threshold alert based on `degrade_events_total`.
 
-## Terraform (IaC skeleton)
+## Terraform (AWS production baseline)
 
-Terraform starter files live in `terraform/aws`. They define provider requirements and a minimal S3 bucket placeholder.
+Terraform files live in `terraform/aws`. They provision a runnable AWS baseline with:
+
+- VPC + public subnets
+- security group with split public/admin ingress
+- encrypted/versioned S3 artifact bucket
+- CloudWatch log group
+- SSM-enabled EC2 host that installs Docker, clones this repository, and boots the production Compose stack
+
 You will need an AWS account + credentials configured (`AWS_PROFILE` or `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) to run `terraform init/plan/apply`.
+
+```bash
+cd terraform/aws
+cp terraform.tfvars.example terraform.tfvars
+terraform init
+terraform plan
+terraform apply
+```
 
 ### Optional: completely remove large files from git history
 
@@ -227,10 +252,11 @@ Open `http://localhost:8000/ui`.
 The prod compose file includes a dedicated Nginx container serving the React build:
 
 ```
+cp .env.prod.example .env.prod
 docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up --build
 ```
 
-Open `http://localhost:8080`.
+Open `http://localhost`.
 
 ## Design Decisions / Failure Modes
 
