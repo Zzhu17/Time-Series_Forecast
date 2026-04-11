@@ -136,6 +136,15 @@ jobs:
         run: ./scripts/check_test_env.sh
       - name: Tests (minimal, allow skips)
         run: scripts/run_test_matrix.sh minimal --enforce-skip-policy
+      - name: Build failure bundle (minimal)
+        if: failure()
+        run: scripts/build_failure_bundle.sh minimal
+      - name: Upload failure bundle (minimal)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-bundle-minimal
+          path: failure_bundle/
       - name: Record skip reasons
         run: cat skip-reasons-minimal.txt
       - name: Build minimal skip metrics
@@ -288,6 +297,15 @@ jobs:
         run: ./scripts/ci_install.sh --profile full
       - name: Tests (full)
         run: scripts/run_test_matrix.sh full --enforce-skip-policy
+      - name: Build failure bundle (full)
+        if: failure()
+        run: scripts/build_failure_bundle.sh full
+      - name: Upload failure bundle (full)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-bundle-full
+          path: failure_bundle/
       - name: Append full skip summary
         run: |
           python - <<'PY'
