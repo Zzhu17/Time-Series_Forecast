@@ -64,6 +64,11 @@ Project/frontend/dist/
 # Terraform
 .terraform/
 terraform/aws/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+tfplan
+terraform/aws/tfplan
 
 # Airflow
 Project/airflow/logs/

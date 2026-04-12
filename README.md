@@ -74,6 +74,11 @@ Local docs are in `docs/` (served by MkDocs via `mkdocs.yml`):
 mkdocs serve
 ```
 
+Operational references:
+
+- deploy/rollback: `docs/release-runbook.md`
+- degrade incident handling: `docs/runbook-degrade.md`
+
 ## Packaging
 
 This repo includes minimal package metadata in `pyproject.toml` and uses `VERSION` for SemVer.

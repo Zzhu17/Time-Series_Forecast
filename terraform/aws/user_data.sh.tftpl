@@ -8,7 +8,7 @@ apt-get install -y \
   ca-certificates \
   curl \
   docker.io \
-  docker-compose-plugin \
+  docker-compose \
   git \
   awscli
 
@@ -41,6 +41,8 @@ CELERY_RESULT_BACKEND=${celery_result_backend}
 REDIS_PORT=6379
 EOF
 
+cp "$${REPO_DIR}/.env.prod" "$${REPO_DIR}/.env"
+
 cat > /etc/systemd/system/tsf-compose.service <<EOF
 [Unit]
 Description=Time Series Forecast production stack
@@ -52,8 +54,8 @@ Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=$${REPO_DIR}
 Environment=COMPOSE_PROJECT_NAME=${compose_project_name}
-ExecStart=/usr/bin/docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-ExecStop=/usr/bin/docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml down
+ExecStart=/usr/bin/docker-compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+ExecStop=/usr/bin/docker-compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml down
 TimeoutStartSec=0
 
 [Install]

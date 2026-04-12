@@ -11,13 +11,16 @@ from fastapi.responses import FileResponse
 router = APIRouter()
 
 
-def _project_root() -> Path:
+def _project_dir() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
 def _load_latest_meta() -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    project_root = _project_root()
-    output_dir = project_root / "output"
+    output_dir = _project_dir() / "output"
     meta_path = output_dir / "latest_report.json"
     run_dir: Optional[str] = None
     leaderboard: Optional[str] = None
@@ -35,7 +38,7 @@ def _load_latest_meta() -> Tuple[Optional[str], Optional[str], Optional[str]]:
         return run_dir, leaderboard, report
 
     # Fallback: newest run dir by mtime
-    runs_root = project_root / "artifacts" / "runs"
+    runs_root = _repo_root() / "artifacts" / "runs"
     if not runs_root.exists():
         return None, None, None
     run_dirs = [p for p in runs_root.iterdir() if p.is_dir()]
@@ -66,7 +69,7 @@ def _load_leaderboard(path: Optional[str]) -> List[Dict[str, Any]]:
 def _load_registry_record(run_id: Optional[str]) -> Dict[str, Any]:
     if not run_id:
         return {}
-    registry_path = _project_root() / "output" / "run_registry.json"
+    registry_path = _project_dir() / "output" / "run_registry.json"
     if not registry_path.exists():
         return {}
     try:
@@ -80,14 +83,44 @@ def _load_registry_record(run_id: Optional[str]) -> Dict[str, Any]:
     return {}
 
 
+def _load_latest_registry_record() -> Dict[str, Any]:
+    registry_path = _project_dir() / "output" / "run_registry.json"
+    if not registry_path.exists():
+        return {}
+    try:
+        data = json.loads(registry_path.read_text())
+    except Exception:
+        return {}
+    records = data if isinstance(data, list) else [data]
+    for record in reversed(records):
+        if isinstance(record, dict) and record.get("run_id"):
+            return record
+    return {}
+
+
 @router.get("/artifacts/latest")
 def latest_artifacts():
     run_dir, leaderboard_path, report_path = _load_latest_meta()
+    registry: Dict[str, Any] = {}
+    if not run_dir and not leaderboard_path and not report_path:
+        registry = _load_latest_registry_record()
+        artifacts = registry.get("artifacts") if isinstance(registry, dict) else {}
+        if not isinstance(artifacts, dict):
+            artifacts = {}
+        run_dir = artifacts.get("run_dir")
+        if not run_dir:
+            model_path = artifacts.get("model_path")
+            if isinstance(model_path, str) and model_path:
+                run_dir = str(Path(model_path).parent)
+        if run_dir:
+            leaderboard_path = artifacts.get("leaderboard_path") or str(Path(run_dir) / "leaderboard.csv")
+            report_path = artifacts.get("report_path") or str(Path(run_dir) / "report.html")
     if not run_dir and not leaderboard_path and not report_path:
         raise HTTPException(status_code=404, detail="no artifacts found")
     run_id = Path(run_dir).name if run_dir else None
     leaderboard = _load_leaderboard(leaderboard_path)
-    registry = _load_registry_record(run_id)
+    if not registry:
+        registry = _load_registry_record(run_id)
     payload = {
         "run_id": run_id,
         "model_name": registry.get("model_name") if registry else None,
@@ -104,7 +137,7 @@ def latest_artifacts():
 
 @router.get("/artifacts/{run_id}/report")
 def get_report(run_id: str):
-    report_path = _project_root() / "artifacts" / "runs" / run_id / "report.html"
+    report_path = _repo_root() / "artifacts" / "runs" / run_id / "report.html"
     if not report_path.exists():
         raise HTTPException(status_code=404, detail="report not found")
     return FileResponse(report_path, media_type="text/html")
@@ -112,7 +145,7 @@ def get_report(run_id: str):
 
 @router.get("/artifacts/{run_id}/leaderboard")
 def get_leaderboard(run_id: str):
-    leaderboard_path = _project_root() / "artifacts" / "runs" / run_id / "leaderboard.csv"
+    leaderboard_path = _repo_root() / "artifacts" / "runs" / run_id / "leaderboard.csv"
     if not leaderboard_path.exists():
         raise HTTPException(status_code=404, detail="leaderboard not found")
     return FileResponse(leaderboard_path, media_type="text/csv")
