@@ -10,8 +10,10 @@ import random
 import math
 # 1. 导入所有经过我们重构和验证的模块
 from models.informer.informer import build_informer_model
+from models.informer.config_utils import build_rolling_snapshot, maybe_auto_adjust_windows
 from models.informer.forward import informer_forward
 from models.informer.input_utils import prepare_informer_inputs, make_informer_loader
+from models.informer.postprocess import apply_post_calibration, compute_dense_metrics
 from utils.array_utils import assert_no_nan, safe_to_numpy
 from utils.residual_modeling import train_and_predict_residual, apply_residual
 from utils.target_transform import inverse_transform_array
@@ -130,38 +132,6 @@ def _ensure_timestep_features(x_feature: Any, pred_len: int):
         return np.repeat(x2[:, None, :], repeats=pred_len, axis=1)
     return x
 
-# === Helper: generate rolling window start indices ===
-def _gen_rolling_starts(values_len: int, seq_len: int, label_len: int, horizon: int, step: int) -> list:
-    starts = []
-    start = values_len - (seq_len + label_len + horizon)
-    if start < 0:
-        start = 0
-    while start + seq_len + label_len + horizon <= values_len:
-        starts.append(start)
-        start += max(1, int(step))
-    if not starts:
-        starts = [max(0, values_len - (seq_len + label_len + horizon))]
-    return starts
-
-# === Helper: strict-mean merge buffers (accumulate then finalize) ===
-def _strict_mean_finalize(accum: np.ndarray, count: np.ndarray) -> np.ndarray:
-    merged = np.full_like(accum, np.nan, dtype=float)
-    mask = count > 0
-    merged[mask] = accum[mask] / count[mask]
-    return merged
-
-# === Helper: clone config and override horizon for rolling forward ===
-def _clone_cfg_with_horizon(config: Dict[str, Any], horizon: int, feature_cols: list) -> Dict[str, Any]:
-    tmp_cfg = dict(config)
-    tmp_cfg.setdefault('model_config', {})
-    tmp_cfg['model_config'] = dict(config['model_config'])
-    tmp_cfg['model_config']['Informer'] = dict(config['model_config']['Informer'])
-    tmp_cfg['model_config']['Informer']['pred_len'] = int(horizon)
-    tmp_cfg.setdefault('data', {})
-    tmp_cfg['data'] = dict(config.get('data', {}))
-    tmp_cfg['data']['all_feature_cols'] = list(feature_cols)
-    return tmp_cfg
-
 # === Helper: Dense rolling prediction for last k points ===
 def _dense_predict_last_k(
     model,
@@ -214,58 +184,6 @@ def _dense_predict_last_k(
     df_out.index.name = time_col
 
     return df_out
-
-# === Helper: Finalize long payloads after loading best model ===
-def _finalize_long_payloads_after_training(model, config):
-    """
-    用最终权重对 val/test 做一次“整段滚动”，把短+长两套载荷都写回 config['data']。
-    不改变原有返回接口（model, result_df），仅补充数据。
-    """
-    import pandas as pd
-    from models.informer.predict import rolling_predict_segment
-
-    data_dict   = config.setdefault('data', {})
-    art         = config.setdefault('artifacts', {})
-    inf_cfg     = (config.get('model_config', {}) or {}).get('Informer', {}) or {}
-    seq_len     = int(inf_cfg.get('seq_len', 96))
-    label_len   = int(inf_cfg.get('label_len', 48))
-    pred_len    = int(inf_cfg.get('pred_len', 24))
-    scaler      = art.get('scaler')
-    feature_cols = (
-        (art.get('feature_cols') if isinstance(art.get('feature_cols'), (list, tuple)) else None)
-        or (data_dict.get('all_feature_cols') if isinstance(data_dict.get('all_feature_cols'), (list, tuple)) else None)
-        or list((config.get('model_config', {}) or {}).get('Informer', {}).get('feature_cols') or [])
-    )
-    calib_ab    = (data_dict or {}).get('val_calib')  # {'a':..., 'b':...} 或 None
-    logger = logging.getLogger(__name__)
-
-    def _write_split(split_name: str) -> None:
-        df_sc = data_dict.get(f'{split_name}_df_sc')
-        if not isinstance(df_sc, pd.DataFrame) or df_sc.empty:
-            return
-        full_df, long_payload = rolling_predict_segment(
-                model=model,
-                df_sc=df_sc,
-                scaler=scaler,
-                feature_cols=feature_cols,
-                seq_len=seq_len, label_len=label_len, pred_len=pred_len,
-                step=1, mode="mean",
-                calib=calib_ab,
-        )
-        data_dict[f'{split_name}_result_df'] = full_df
-        data_dict[f'{split_name}_long'] = long_payload
-        tail_df = full_df.tail(min(pred_len, len(full_df)))
-        data_dict[f'{split_name}_tail'] = {
-            "timestamps": tail_df.index.astype(str).tolist(),
-            "y_true": tail_df["y_true"].astype(float).tolist(),
-            "yhat": tail_df["yhat"].astype(float).tolist(),
-        }
-
-    for split_name in ("val", "test"):
-        try:
-            _write_split(split_name)
-        except Exception as e:
-            logger.warning("[train] finalize %s long failed: %s", split_name.upper(), e)
 
 def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> Tuple[Any, pd.DataFrame]:
     """
@@ -501,43 +419,13 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
     artifacts_blk['feature_cols'] = feature_cols
     artifacts_blk['target_idx'] = 0  # value_col fixed at index 0
 
-    _roll_cfg0 = (config.get('prediction', {}) or {}).get('rolling', {}) or {}
-    try:
-        _pred_len_snap = int(informer_cfg.get('pred_len', 24))
-    except Exception:
-        _pred_len_snap = 24
-    _step_snap = _roll_cfg0.get('step', _pred_len_snap)
-    try:
-        _step_snap = int(_step_snap)
-    except Exception:
-        _step_snap = _pred_len_snap
-    rolling_snapshot = {
-        "enabled": bool(_roll_cfg0.get('enabled', True)),
-        "mode": str(_roll_cfg0.get('mode', 'overwrite')),
-        "step": _step_snap,
-        "pred_len": _pred_len_snap,
-    }
-    calibrate_enabled = bool(_roll_cfg0.get('calibrate', True))
-    rolling_snapshot["calibrate"] = calibrate_enabled
-    data_blk['rolling_snapshot'] = rolling_snapshot
+    data_blk['rolling_snapshot'] = build_rolling_snapshot(config, informer_cfg)
 
     # --- 2.0 窗口参数与数据长度对齐（同时适配 train/val，避免两次 prepare 时参数不一致） ---
     try:
-        seq_len = int(informer_cfg.get('seq_len', 96))
-        label_len = int(informer_cfg.get('label_len', 48))
-        pred_len = int(informer_cfg.get('pred_len', 24))
-        if label_len > seq_len:
-            label_len = seq_len
-        n_min = int(min(len(train_df_sc), len(val_df_sc)))
-        required = seq_len + pred_len
-        if n_min < required:
-            pred_len_new = max(1, min(pred_len, max(1, int(n_min * 0.2))))
-            seq_len_new = max(4, n_min - pred_len_new)
-            label_len_new = min(label_len, seq_len_new)
-            informer_cfg['seq_len'] = int(seq_len_new)
-            informer_cfg['label_len'] = int(label_len_new)
-            informer_cfg['pred_len'] = int(pred_len_new)
-            print(f"[informer] train/val 数据不足自动缩短窗口: seq_len={seq_len_new}, label_len={label_len_new}, pred_len={pred_len_new} (train={len(train_df_sc)}, val={len(val_df_sc)})")
+        msg = maybe_auto_adjust_windows(informer_cfg, len(train_df_sc), len(val_df_sc))
+        if msg:
+            print(msg)
     except Exception as _e:
         print(f"[informer] window auto-adjust skipped: {_e}")
 
@@ -1019,108 +907,21 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
         print(f"Warning: dense prediction failed: {e}")
 
     # --- Optional post-hoc calibration (fit on val, apply to val+test) ---
-    # Goal: reduce absolute RMSE while keeping MAPE nearly unchanged.
     try:
         data_blk = config.get('data', {}) or {}
-        pcfg = (config.get('post_calibration') or {})
-        enabled = bool(pcfg.get('enabled', True))
-        if enabled:
-            def _dense_metrics(df):
-                if not (isinstance(df, pd.DataFrame) and {'y_true', 'yhat'}.issubset(df.columns) and len(df) > 0):
-                    return None
-                yt = pd.to_numeric(df['y_true'], errors='coerce').to_numpy(dtype=float)
-                yp = pd.to_numeric(df['yhat'], errors='coerce').to_numpy(dtype=float)
-                m = np.isfinite(yt) & np.isfinite(yp)
-                if int(m.sum()) < 16:
-                    return None
-                diff = yp[m] - yt[m]
-                rmse = float(np.sqrt(np.mean(diff * diff)))
-                mape = float(np.mean(np.abs(diff) / (np.abs(yt[m]) + 1e-8)))
-                return rmse, mape
-
-            def _fit_affine(df):
-                yt = pd.to_numeric(df['y_true'], errors='coerce').to_numpy(dtype=float)
-                yp = pd.to_numeric(df['yhat'], errors='coerce').to_numpy(dtype=float)
-                m = np.isfinite(yt) & np.isfinite(yp)
-                yt = yt[m]; yp = yp[m]
-                if yt.size < 16:
-                    return None
-                mu_t = float(np.mean(yt))
-                mu_p = float(np.mean(yp))
-                x = yp - mu_p
-                y = yt - mu_t
-                ridge = float(pcfg.get('ridge', 1e-6))
-                denom = float(np.dot(x, x) + ridge * yt.size)
-                if not np.isfinite(denom) or denom <= 0:
-                    return None
-                a = float(np.dot(x, y) / denom)
-                b = float(mu_t - a * mu_p)
-                # keep calibration conservative by default
-                a_min, a_max = pcfg.get('a_clip', [0.8, 1.2])
-                try:
-                    a_min = float(a_min); a_max = float(a_max)
-                except Exception:
-                    a_min, a_max = 0.8, 1.2
-                if np.isfinite(a):
-                    a = float(np.clip(a, a_min, a_max))
-                # limit offset relative to typical magnitude
-                mean_abs = float(np.mean(np.abs(yt))) if yt.size else 0.0
-                b_ratio = float(pcfg.get('b_clip_ratio', 0.1))
-                b_lim = max(1e-6, mean_abs * b_ratio)
-                if np.isfinite(b):
-                    b = float(np.clip(b, -b_lim, b_lim))
-                return {'a': a, 'b': b}
-
-            val_df = data_blk.get('val_dense')
-            test_df = data_blk.get('test_dense')
-            if isinstance(val_df, pd.DataFrame) and not val_df.empty:
-                base = _dense_metrics(val_df)
-                calib = _fit_affine(val_df)
-                if base and calib:
-                    a = float(calib['a']); b = float(calib['b'])
-                    val_adj = val_df.copy()
-                    val_adj['yhat'] = pd.to_numeric(val_adj['yhat'], errors='coerce') * a + b
-                    newm = _dense_metrics(val_adj)
-                    if newm:
-                        rmse0, mape0 = base
-                        rmse1, mape1 = newm
-                        mape_guard_rel = float(pcfg.get('mape_guard_rel', 1.02))
-                        if (rmse1 < rmse0) and (mape1 <= mape0 * mape_guard_rel):
-                            data_blk['val_dense'] = val_adj
-                            if isinstance(test_df, pd.DataFrame) and not test_df.empty:
-                                test_adj = test_df.copy()
-                                test_adj['yhat'] = pd.to_numeric(test_adj['yhat'], errors='coerce') * a + b
-                                data_blk['test_dense'] = test_adj
-                            data_blk['val_calib'] = calib
-                            print(f"[post_calibration] applied: a={a:.6f}, b={b:.6f} | val rmse {rmse0:.6f}->{rmse1:.6f}, mape {mape0:.6f}->{mape1:.6f}")
-                        else:
-                            data_blk['val_calib'] = calib
-                            print(f"[post_calibration] skipped (guard): val rmse {rmse0:.6f}->{rmse1:.6f}, mape {mape0:.6f}->{mape1:.6f}")
+        apply_post_calibration(data_blk, config)
     except Exception as e:
         print(f"Warning: post calibration failed: {e}")
-
-    # --- Compute final RMSE/MAPE from dense outputs (if available) ---
-    def _compute_dense_metrics(df):
-        try:
-            if isinstance(df, pd.DataFrame) and {'y_true','yhat'}.issubset(df.columns) and len(df) > 0:
-                diff = (df['yhat'].astype(float) - df['y_true'].astype(float)).to_numpy()
-                true = df['y_true'].astype(float).to_numpy()
-                rmse_f = float(np.sqrt(np.mean(diff ** 2)))
-                mape_f = float(np.mean(np.abs(diff) / (np.abs(true) + 1e-8)))
-                return {'rmse': rmse_f, 'mape': mape_f}
-        except Exception:
-            return None
-        return None
 
     try:
         data_blk = config.get('data', {}) or {}
         metrics_blk = config.setdefault('metrics', {})
         if isinstance(data_blk.get('val_dense'), pd.DataFrame):
-            m_val = _compute_dense_metrics(data_blk['val_dense'])
+            m_val = compute_dense_metrics(data_blk['val_dense'])
             if m_val:
                 metrics_blk['val'] = m_val
         if isinstance(data_blk.get('test_dense'), pd.DataFrame):
-            m_test = _compute_dense_metrics(data_blk['test_dense'])
+            m_test = compute_dense_metrics(data_blk['test_dense'])
             if m_test:
                 metrics_blk['test'] = m_test
         # Optional echo to console
