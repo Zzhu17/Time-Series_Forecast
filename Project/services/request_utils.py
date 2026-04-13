@@ -91,3 +91,17 @@ def auto_feature_cols(
         feats.append(name)
 
     return feats
+
+
+def resolve_feature_cols(
+    df: pd.DataFrame,
+    *,
+    feature_cols: Optional[List[str]],
+    time_col: str,
+    value_col: str,
+    auto_select_features: bool = False,
+) -> List[str]:
+    resolved = list(feature_cols or [])
+    if not resolved and auto_select_features:
+        resolved = auto_feature_cols(df.copy(), time_col, value_col)
+    return resolved

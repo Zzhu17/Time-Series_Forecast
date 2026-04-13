@@ -9,94 +9,13 @@ import random
 
 from utils.schemas import PipelineRunModel
 from utils.feature_pipeline import save_feature_contract_if_any
-
-# ---------- 连续序列拼接：供 plot.py 连续分支直接使用 ----------
-def build_continuous_series(train_df_plot, val_dense, test_dense, time_col=None):
-    """
-    将 train/val/test 的真值与预测拼接为“连续绘图序列”。
-
-    返回:
-      - full_truth (pd.Series): train_true -> val_true -> test_true （一条连续线，DatetimeIndex）
-      - full_pred_cont (pd.Series): (训练末端“衔接点”) -> val_pred -> test_pred （一条连续线）
-      - phase_mask (pd.DataFrame): 索引为统一时间轴，标记 is_train/is_val/is_test
-    """
-    # 训练真值时间索引
-    if time_col and hasattr(train_df_plot, "columns") and time_col in train_df_plot.columns:
-        train_time = pd.to_datetime(train_df_plot[time_col], errors="coerce", utc=True)
-        try:
-            train_time = train_time.dt.tz_localize(None)
-        except Exception:
-            pass
-    else:
-        idx_src = getattr(train_df_plot, "index", None)
-        if idx_src is None or (hasattr(idx_src, "__len__") and len(idx_src) == 0):
-            train_time = pd.date_range(
-                start=pd.Timestamp.today().normalize(),
-                periods=len(train_df_plot),
-                freq="D"
-            )
-        else:
-            train_time = pd.to_datetime(idx_src, errors="coerce", utc=True)
-            try:
-                train_time = train_time.tz_localize(None)
-            except Exception:
-                pass
-
-    train_true = pd.Series(
-        pd.to_numeric(train_df_plot.get("training_true", pd.Series([], dtype=float)), errors="coerce").to_numpy(),
-        index=train_time, name="y_true"
-    ).dropna()
-
-    # 小工具：从 df 取列 -> Series（保证索引为时间）
-    def _series(df, col):
-        if df is None or not isinstance(df, pd.DataFrame) or df.empty:
-            return pd.Series(dtype=float)
-        idx = pd.to_datetime(df.index, errors="coerce", utc=True)
-        try:
-            idx = idx.tz_localize(None)
-        except Exception:
-            pass
-        if col not in df.columns:
-            return pd.Series(dtype=float)
-        val = pd.to_numeric(df[col], errors="coerce")
-        return pd.Series(val.to_numpy(), index=idx, name=col).dropna()
-
-    # 关键：这里要取统一列名 y_true/yhat（我们在 pipeline 里已强制保留）
-    val_true  = _series(val_dense,  "y_true")
-    val_pred  = _series(val_dense,  "yhat")
-    test_true = _series(test_dense, "y_true")
-    test_pred = _series(test_dense, "yhat")
-
-    # 1) 连续真值
-    full_truth = pd.concat([train_true, val_true, test_true]).sort_index()
-    full_truth = full_truth[~full_truth.index.duplicated(keep="last")]
-
-    # 2) 连续预测（在训练末尾放一个“衔接点”把预测线接上）
-    if len(train_true):
-        t_last = train_true.index.max()
-        v_last = float(train_true.iloc[-1])
-        splice = pd.Series([v_last], index=[t_last], name="yhat")
-        full_pred_cont = pd.concat([splice, val_pred, test_pred]).sort_index()
-    else:
-        full_pred_cont = pd.concat([val_pred, test_pred]).sort_index()
-    full_pred_cont = full_pred_cont[~full_pred_cont.index.duplicated(keep="last")]
-
-    # 3) 阶段掩码
-    timeline   = full_truth.index.union(full_pred_cont.index).unique().sort_values()
-    phase_mask = pd.DataFrame(index=timeline, data={
-        "is_train": False, "is_val": False, "is_test": False
-    })
-    t_train_end = train_true.index.max() if len(train_true) else None
-    t_val_end   = val_true.index.max()   if len(val_true)   else t_train_end
-
-    if t_train_end is not None:
-        phase_mask.loc[phase_mask.index <= t_train_end, "is_train"] = True
-    if t_train_end is not None and t_val_end is not None:
-        phase_mask.loc[(phase_mask.index > t_train_end) & (phase_mask.index <= t_val_end), "is_val"] = True
-    if t_val_end is not None:
-        phase_mask.loc[phase_mask.index > t_val_end, "is_test"] = True
-
-    return full_truth, full_pred_cont, phase_mask
+from services.result_contracts import (
+    RUN_RESULT_DATA_KEYS,
+    backfill_metric_slot,
+    backfill_missing,
+    ensure_metric_slot,
+    ensure_run_result,
+)
 
 
 def set_seed(seed: int | None):
@@ -312,6 +231,43 @@ def run_train_predict_pipeline(config):
             out = _inv_tt(out, tt_params)
         return pd.Series(out, index=df_sc.index)
 
+    def _resolve_run_dir(arts: dict) -> str:
+        run_dir = str((arts or {}).get("run_dir") or (arts or {}).get("artifact_dir") or "")
+        if not run_dir:
+            model_path = (arts or {}).get("model_path")
+            if isinstance(model_path, str) and model_path:
+                run_dir = os.path.dirname(model_path)
+        if not run_dir:
+            run_dir = str(Path(__file__).resolve().parents[1] / "artifacts")
+        return run_dir
+
+    def _assign_missing_split_timestamps(data_blk: dict, df_input: pd.DataFrame, *, time_col: str, val_true, test_true) -> None:
+        val_len = int(len(np.asarray(val_true).ravel()))
+        test_len = int(len(np.asarray(test_true).ravel()))
+        ts_series = None
+        if isinstance(df_input, pd.DataFrame) and time_col in df_input.columns:
+            ts_series = pd.to_datetime(df_input[time_col], errors="coerce", utc=True)
+            try:
+                ts_series = ts_series.dt.tz_localize(None)
+            except Exception:
+                pass
+        if ts_series is None or (val_len + test_len) <= 0:
+            return
+        total = int(len(ts_series))
+        train_len = max(0, total - val_len - test_len)
+        if data_blk.get("val_timestamps") is None and val_len > 0:
+            data_blk["val_timestamps"] = ts_series.iloc[train_len: train_len + val_len].tolist()
+        if data_blk.get("test_timestamps") is None and test_len > 0:
+            data_blk["test_timestamps"] = ts_series.iloc[train_len + val_len: train_len + val_len + test_len].tolist()
+
+    def _to_dense_df(true_arr, pred_arr) -> Optional[pd.DataFrame]:
+        true_arr = np.asarray(true_arr, dtype=float).ravel()
+        pred_arr = np.asarray(pred_arr, dtype=float).ravel()
+        length = min(len(true_arr), len(pred_arr))
+        if length <= 0:
+            return None
+        return pd.DataFrame({"y_true": true_arr[:length], "yhat": pred_arr[:length]})
+
     # ---------- 配置取值 ----------
     model_key = str((config.get("model") or {}).get("name", "") or config.get("model_type", "")).strip().lower()
     data_blk   = config.setdefault('data', {})
@@ -402,6 +358,151 @@ def run_train_predict_pipeline(config):
                     out["seasonal"]["test"] = _basic_metrics(y_test, seasonal_test)
         return out
 
+    def _compute_metrics_from_dense(df_dense: Optional[pd.DataFrame]) -> Optional[dict]:
+        if not isinstance(df_dense, pd.DataFrame) or df_dense.empty:
+            return None
+        if not all(c in df_dense.columns for c in ["y_true", "yhat"]):
+            return None
+        dfm = df_dense[["y_true", "yhat"]].dropna()
+        if dfm.empty:
+            return None
+        return _calc_metrics(dfm["y_true"].values, dfm["yhat"].values)
+
+    def _update_dense_metrics(data_block: dict, metrics_block: dict, val_dense_df, test_dense_df) -> tuple[Optional[dict], Optional[dict]]:
+        val_metrics_local = _compute_metrics_from_dense(val_dense_df)
+        test_metrics_local = _compute_metrics_from_dense(test_dense_df)
+        if isinstance(val_metrics_local, dict):
+            metrics_block["val_rmse"] = val_metrics_local.get("rmse")
+            metrics_block["val_mape"] = val_metrics_local.get("mape")
+            metrics_block["val_nrmse"] = val_metrics_local.get("nrmse")
+            metrics_block["val_smape"] = val_metrics_local.get("smape")
+        if isinstance(test_metrics_local, dict):
+            metrics_block["test_rmse"] = test_metrics_local.get("rmse")
+            metrics_block["test_mape"] = test_metrics_local.get("mape")
+            metrics_block["test_nrmse"] = test_metrics_local.get("nrmse")
+            metrics_block["test_smape"] = test_metrics_local.get("smape")
+        data_block["val_metrics"] = val_metrics_local
+        data_block["test_metrics"] = test_metrics_local
+        return val_metrics_local, test_metrics_local
+
+    def _update_baseline_metrics(data_block: dict, metrics_block: dict, y_all_source, val_len: int, test_len: int):
+        y_all = pd.to_numeric(y_all_source, errors="coerce").to_numpy(dtype=float)
+        n_total = int(len(y_all))
+        train_len_local = max(0, n_total - int(val_len) - int(test_len))
+        base_metrics_local = _baseline_metrics(y_all, train_len_local, int(val_len), int(test_len))
+        data_block["baseline_metrics"] = base_metrics_local
+        metrics_block["baseline"] = base_metrics_local
+
+    def _update_drift_metrics(
+        data_block: dict,
+        metrics_block: dict,
+        *,
+        val_true_arr,
+        val_pred_arr,
+        test_true_arr,
+        test_pred_arr,
+    ):
+        from evaluation.drift import compute_residual_drift
+
+        drift = compute_residual_drift(
+            val_true=np.asarray(val_true_arr),
+            val_pred=np.asarray(val_pred_arr),
+            test_true=np.asarray(test_true_arr),
+            test_pred=np.asarray(test_pred_arr),
+        )
+        data_block["drift"] = drift
+        metrics_block["drift"] = drift
+
+    def _maybe_run_backtest(data_block: dict, *, series_source, value_col_name: str):
+        bt_cfg = (config.get("evaluation") or {}).get("backtest") or {}
+        if not bool(bt_cfg.get("enabled", False)):
+            return
+
+        from evaluation.backtest import rolling_backtest_naive
+
+        if isinstance(series_source, pd.DataFrame):
+            series = pd.to_numeric(series_source[value_col_name], errors="coerce")
+        else:
+            series = pd.Series(dtype=float)
+        bt = rolling_backtest_naive(
+            series,
+            horizon=int(bt_cfg.get("horizon", 1)),
+            step=int(bt_cfg.get("step", 1)),
+            window=int(bt_cfg.get("window", 24)),
+            seasonal_period=int(bt_cfg.get("seasonal_period", 0)) or None,
+        )
+        data_block["backtest"] = bt
+        if bt.get("y_true") and bt.get("y_pred"):
+            data_block["backtest_metrics"] = _basic_metrics(
+                np.asarray(bt.get("y_true")),
+                np.asarray(bt.get("y_pred")),
+            )
+
+    def _build_training_true_series(data_block: dict, *, emit_warning: bool = False) -> Optional[pd.Series]:
+        try:
+            train_df_sc = data_block.get("train_df_sc")
+            if isinstance(train_df_sc, pd.DataFrame) and len(train_df_sc) > 0 and scaler is not None:
+                return _inverse_series_1d_from_df_scaled(train_df_sc, scaler, config, value_col)
+        except Exception as exc:
+            if emit_warning:
+                print(f"[pipeline] Warning: failed to build training_true series: {exc}")
+        return None
+
+    def _maybe_pipeline_plot(
+        *,
+        train_true_series: Optional[pd.Series],
+        val_dense_df,
+        test_dense_df,
+        split_info: dict,
+        title: str,
+    ):
+        viz_cfg = (config.get("visualization") or {})
+        do_plot = bool(viz_cfg.get("pipeline_plot", False)) or (os.environ.get("TSF_PIPELINE_PLOT", "0") == "1")
+        if not do_plot:
+            return
+
+        from visualizations.plot import plot_results
+
+        train_len_local = split_info.get("train_len")
+        val_len_local = split_info.get("val_len")
+        test_len_local = split_info.get("test_len")
+        train_df_plot_local = (
+            train_true_series.to_frame("training_true")
+            if isinstance(train_true_series, pd.Series)
+            else pd.DataFrame(columns=["training_true"])
+        )
+        val_plot_df = None if (isinstance(val_dense_df, pd.DataFrame) and val_dense_df.empty) else val_dense_df
+        test_plot_df = None if (isinstance(test_dense_df, pd.DataFrame) and test_dense_df.empty) else test_dense_df
+        payload = {
+            "val_dense": val_plot_df,
+            "test_dense": test_plot_df,
+            "val_long": None,
+            "test_long": None,
+            "split": {
+                "train_len": train_len_local,
+                "val_len": val_len_local,
+                "test_len": test_len_local,
+            },
+            "full_truth": None,
+            "full_pred_cont": None,
+            "phase_mask": None,
+        }
+
+        plot_results(
+            train_df=train_df_plot_local,
+            val_df_aligned=val_plot_df if isinstance(val_plot_df, pd.DataFrame) else None,
+            test_df_aligned=test_plot_df if isinstance(test_plot_df, pd.DataFrame) else None,
+            time_col=time_col,
+            value_col=value_col,
+            title=title,
+            payload=payload,
+            val_long=None,
+            test_long=None,
+            train_len=int(train_len_local) if train_len_local is not None else (len(train_true_series) if isinstance(train_true_series, pd.Series) else None),
+            val_len=int(val_len_local) if val_len_local is not None else None,
+            test_len=int(test_len_local) if test_len_local is not None else None,
+        )
+
     _progress(0.03, f"pipeline start (model={model_key})")
 
     # ===========================================================
@@ -437,13 +538,7 @@ def run_train_predict_pipeline(config):
             )
             data_blk["dataframe"] = _df_input
             data_blk["df"] = _df_input
-            run_dir = str(artifacts.get("run_dir") or artifacts.get("artifact_dir") or "")
-            if not run_dir:
-                model_path = artifacts.get("model_path")
-                if isinstance(model_path, str) and model_path:
-                    run_dir = os.path.dirname(model_path)
-            if not run_dir:
-                run_dir = str(Path(__file__).resolve().parents[1] / "artifacts")
+            run_dir = _resolve_run_dir(artifacts)
             assets = save_processed_assets(
                 _df_input,
                 profile=profile,
@@ -526,36 +621,18 @@ def run_train_predict_pipeline(config):
 
         # 反推时间戳（若上游没给）
         try:
-            _val_len = int(len(np.asarray(val_true).ravel()))
-            _test_len = int(len(np.asarray(test_true).ravel()))
-            _ts_series = None
-            if isinstance(_df_input, pd.DataFrame) and time_col in _df_input.columns:
-                _ts_series = pd.to_datetime(_df_input[time_col], errors="coerce", utc=True)
-                try:
-                    _ts_series = _ts_series.dt.tz_localize(None)
-                except Exception:
-                    pass
-            if _ts_series is not None and (_val_len + _test_len) > 0:
-                _n_total = int(len(_ts_series))
-                _n_train = max(0, _n_total - _val_len - _test_len)
-                if data_blk.get("val_timestamps") is None and _val_len > 0:
-                    data_blk["val_timestamps"] = _ts_series.iloc[_n_train : _n_train + _val_len].tolist()
-                if data_blk.get("test_timestamps") is None and _test_len > 0:
-                    data_blk["test_timestamps"] = _ts_series.iloc[_n_train + _val_len : _n_train + _val_len + _test_len].tolist()
+            _assign_missing_split_timestamps(
+                data_blk,
+                _df_input,
+                time_col=time_col,
+                val_true=val_true,
+                test_true=test_true,
+            )
         except Exception as _e:
             print(f"[pipeline] warn: failed to infer timestamps: {_e}")
 
-        # 组装 dense DataFrame
-        def _mk_dense(true_arr, pred_arr):
-            true_arr = np.asarray(true_arr, dtype=float).ravel()
-            pred_arr = np.asarray(pred_arr, dtype=float).ravel()
-            L = min(len(true_arr), len(pred_arr))
-            if L <= 0: return None
-            return pd.DataFrame({"y_true": true_arr[:L], "yhat": pred_arr[:L]})
-
-
-        val_dense = _mk_dense(val_true, val_pred)
-        test_dense = _mk_dense(test_true, test_pred)
+        val_dense = _to_dense_df(val_true, val_pred)
+        test_dense = _to_dense_df(test_true, test_pred)
         data_blk["val_dense"] = val_dense
         data_blk["test_dense"] = test_dense
         _progress(0.88, "metrics + residual modeling")
@@ -797,138 +874,49 @@ def run_train_predict_pipeline(config):
         data_blk["val_dense"]  = val_dense_std
         data_blk["test_dense"] = test_dense_std
 
-        # 计算指标
-        def _compute_metrics_from_dense(df_dense: Optional[pd.DataFrame]) -> Optional[dict]:
-            if not isinstance(df_dense, pd.DataFrame) or df_dense.empty: return None
-            if not all(c in df_dense.columns for c in ["y_true", "yhat"]): return None
-            dfm = df_dense[["y_true", "yhat"]].dropna()
-            if dfm.empty: return None
-            return _calc_metrics(dfm["y_true"].values, dfm["yhat"].values)
-
-        val_metrics  = _compute_metrics_from_dense(val_dense_std)
-        test_metrics = _compute_metrics_from_dense(test_dense_std)
         metrics_blk = config.setdefault("metrics", {})
-        if isinstance(val_metrics, dict):
-            metrics_blk["val_rmse"] = val_metrics.get("rmse")
-            metrics_blk["val_mape"] = val_metrics.get("mape")
-            metrics_blk["val_nrmse"] = val_metrics.get("nrmse")
-            metrics_blk["val_smape"] = val_metrics.get("smape")
-        if isinstance(test_metrics, dict):
-            metrics_blk["test_rmse"] = test_metrics.get("rmse")
-            metrics_blk["test_mape"] = test_metrics.get("mape")
-            metrics_blk["test_nrmse"] = test_metrics.get("nrmse")
-            metrics_blk["test_smape"] = test_metrics.get("smape")
-        data_blk["val_metrics"]  = val_metrics
-        data_blk["test_metrics"] = test_metrics
+        val_metrics, test_metrics = _update_dense_metrics(data_blk, metrics_blk, val_dense_std, test_dense_std)
 
         # Baseline metrics (naive / seasonal)
         try:
-            y_all = pd.to_numeric(_df_input[value_col], errors="coerce").to_numpy(dtype=float)
-            n_total = int(len(y_all))
             v_len = int(len(np.asarray(val_true).ravel())) if val_true is not None else 0
             te_len = int(len(np.asarray(test_true).ravel())) if test_true is not None else 0
-            t_len = max(0, n_total - v_len - te_len)
-            base_metrics = _baseline_metrics(y_all, t_len, v_len, te_len)
-            data_blk["baseline_metrics"] = base_metrics
-            metrics_blk["baseline"] = base_metrics
+            _update_baseline_metrics(data_blk, metrics_blk, _df_input[value_col], v_len, te_len)
         except Exception:
             pass
 
         try:
-            from evaluation.drift import compute_residual_drift
-
-            drift = compute_residual_drift(
+            _update_drift_metrics(
+                data_blk,
+                metrics_blk,
                 val_true=np.asarray(val_true),
                 val_pred=np.asarray(val_pred),
                 test_true=np.asarray(test_true),
                 test_pred=np.asarray(test_pred),
             )
-            data_blk["drift"] = drift
-            metrics_blk["drift"] = drift
         except Exception:
             pass
 
         # Optional rolling backtest (naive/seasonal naive)
         try:
-            bt_cfg = (config.get("evaluation") or {}).get("backtest") or {}
-            if bool(bt_cfg.get("enabled", False)):
-                from evaluation.backtest import rolling_backtest_naive
-
-                series = pd.to_numeric(_df_input[value_col], errors="coerce")
-                bt = rolling_backtest_naive(
-                    series,
-                    horizon=int(bt_cfg.get("horizon", 1)),
-                    step=int(bt_cfg.get("step", 1)),
-                    window=int(bt_cfg.get("window", 24)),
-                    seasonal_period=int(bt_cfg.get("seasonal_period", 0)) or None,
-                )
-                data_blk["backtest"] = bt
-                if bt.get("y_true") and bt.get("y_pred"):
-                    data_blk["backtest_metrics"] = _basic_metrics(
-                        np.asarray(bt.get("y_true")),
-                        np.asarray(bt.get("y_pred")),
-                    )
+            _maybe_run_backtest(data_blk, series_source=_df_input, value_col_name=value_col)
         except Exception:
             pass
 
         # 反归一化训练真值
-        train_true = None
-        try:
-            train_df_sc = data_blk.get('train_df_sc')
-            if isinstance(train_df_sc, pd.DataFrame) and len(train_df_sc) > 0 and scaler is not None:
-                train_true = _inverse_series_1d_from_df_scaled(train_df_sc, scaler, config, value_col)
-        except Exception:
-            pass
+        train_true = _build_training_true_series(data_blk)
 
         _progress(0.98, "pipeline done")
-        train_df_plot = train_true.to_frame("training_true") if isinstance(train_true, pd.Series) else pd.DataFrame(columns=["training_true"])
-
-        # Continuous-series payload removed: app handles plotting and does not require these series.
-        full_truth = None
-        full_pred_cont = None
-        phase_mask = None
 
         # --- Optional: pipeline-side plot generation (disabled by default; app handles plotting) ---
         try:
-            viz_cfg = (config.get("visualization") or {})
-            do_plot = bool(viz_cfg.get("pipeline_plot", False)) or (os.environ.get("TSF_PIPELINE_PLOT", "0") == "1")
-            if do_plot:
-                from visualizations.plot import plot_results
-                split_info = (data_blk.get('split') or {})
-                train_len = split_info.get('train_len'); val_len = split_info.get('val_len'); test_len = split_info.get('test_len')
-
-                payload = {
-                    "val_dense": val_dense_std,
-                    "test_dense": test_dense_std,
-                    "val_long": None, "test_long": None,
-                    "split": {"train_len": train_len, "val_len": val_len, "test_len": test_len},
-                    # 关键：传给连续分支
-                    "full_truth": full_truth,
-                    "full_pred_cont": full_pred_cont,
-                    "phase_mask": phase_mask,
-                }
-
-                try:
-                    print(f"[pipeline] payload check -> truth:{type(payload['full_truth'])}, "
-                          f"pred:{type(payload['full_pred_cont'])}, "
-                          f"lens: {len(payload['full_truth']) if isinstance(payload['full_truth'], pd.Series) else 'NA'} / "
-                          f"{len(payload['full_pred_cont']) if isinstance(payload['full_pred_cont'], pd.Series) else 'NA'}")
-                except Exception:
-                    pass
-
-                plot_results(
-                    train_df=train_df_plot,
-                    val_df_aligned=val_dense_std if isinstance(val_dense_std, pd.DataFrame) else None,
-                    test_df_aligned=test_dense_std if isinstance(test_dense_std, pd.DataFrame) else None,
-                    time_col=time_col,
-                    value_col=value_col,
-                    title=f"Training / Validation / Test - Full Span (Dense 1-step) [{model_key}]",
-                    payload=payload,
-                    val_long=None, test_long=None,
-                    train_len=int(train_len) if train_len is not None else (len(train_true) if isinstance(train_true, pd.Series) else None),
-                    val_len=int(val_len) if val_len is not None else None,
-                    test_len=int(test_len) if test_len is not None else None,
-                )
+            _maybe_pipeline_plot(
+                train_true_series=train_true,
+                val_dense_df=val_dense_std,
+                test_dense_df=test_dense_std,
+                split_info=(data_blk.get("split") or {}),
+                title=f"Training / Validation / Test - Full Span (Dense 1-step) [{model_key}]",
+            )
         except Exception as e:
             print(f"[pipeline] Info: pipeline_plot skipped or failed: {e}")
 
@@ -959,82 +947,35 @@ def run_train_predict_pipeline(config):
     split_info = (data_blk.get('split') or {})
     train_len = split_info.get('train_len'); val_len = split_info.get('val_len'); test_len = split_info.get('test_len')
 
-    # 维持原指标计算
-    def _compute_metrics_from_dense(df_dense: Optional[pd.DataFrame]) -> Optional[dict]:
-        if not isinstance(df_dense, pd.DataFrame) or df_dense.empty: return None
-        if not all(c in df_dense.columns for c in ["y_true", "yhat"]): return None
-        dfm = df_dense[["y_true", "yhat"]].dropna()
-        if dfm.empty: return None
-        return _calc_metrics(dfm["y_true"].values, dfm["yhat"].values)
-
-    val_metrics  = _compute_metrics_from_dense(val_dense)
-    test_metrics = _compute_metrics_from_dense(test_dense)
     metrics_blk = config.setdefault("metrics", {})
-    if isinstance(val_metrics, dict):
-        metrics_blk["val_rmse"] = val_metrics.get("rmse")
-        metrics_blk["val_mape"] = val_metrics.get("mape")
-        metrics_blk["val_nrmse"] = val_metrics.get("nrmse")
-        metrics_blk["val_smape"] = val_metrics.get("smape")
-    if isinstance(test_metrics, dict):
-        metrics_blk["test_rmse"] = test_metrics.get("rmse")
-        metrics_blk["test_mape"] = test_metrics.get("mape")
-        metrics_blk["test_nrmse"] = test_metrics.get("nrmse")
-        metrics_blk["test_smape"] = test_metrics.get("smape")
-    data_blk["val_metrics"]  = val_metrics
-    data_blk["test_metrics"] = test_metrics
+    val_metrics, test_metrics = _update_dense_metrics(data_blk, metrics_blk, val_dense, test_dense)
 
     try:
         if isinstance(data_blk.get("dataframe"), pd.DataFrame):
-            y_all = pd.to_numeric(data_blk["dataframe"][value_col], errors="coerce").to_numpy(dtype=float)
+            y_all_source = data_blk["dataframe"][value_col]
         else:
-            y_all = pd.to_numeric(config.get("dataframe")[value_col], errors="coerce").to_numpy(dtype=float)  # type: ignore[index]
-        n_total = int(len(y_all))
+            y_all_source = config.get("dataframe")[value_col]  # type: ignore[index]
         v_len = int(len(val_dense)) if isinstance(val_dense, pd.DataFrame) else 0
         te_len = int(len(test_dense)) if isinstance(test_dense, pd.DataFrame) else 0
-        t_len = max(0, n_total - v_len - te_len)
-        base_metrics = _baseline_metrics(y_all, t_len, v_len, te_len)
-        data_blk["baseline_metrics"] = base_metrics
-        metrics_blk["baseline"] = base_metrics
+        _update_baseline_metrics(data_blk, metrics_blk, y_all_source, v_len, te_len)
     except Exception:
         pass
 
     try:
-        from evaluation.drift import compute_residual_drift
-
         if isinstance(val_dense, pd.DataFrame) and isinstance(test_dense, pd.DataFrame):
-            drift = compute_residual_drift(
+            _update_drift_metrics(
+                data_blk,
+                metrics_blk,
                 val_true=val_dense["y_true"].values,
                 val_pred=val_dense["yhat"].values,
                 test_true=test_dense["y_true"].values,
                 test_pred=test_dense["yhat"].values,
             )
-            data_blk["drift"] = drift
-            metrics_blk["drift"] = drift
     except Exception:
         pass
 
     try:
-        bt_cfg = (config.get("evaluation") or {}).get("backtest") or {}
-        if bool(bt_cfg.get("enabled", False)):
-            from evaluation.backtest import rolling_backtest_naive
-
-            if isinstance(data_blk.get("dataframe"), pd.DataFrame):
-                series = pd.to_numeric(data_blk.get("dataframe")[value_col], errors="coerce")
-            else:
-                series = pd.Series(dtype=float)
-            bt = rolling_backtest_naive(
-                series,
-                horizon=int(bt_cfg.get("horizon", 1)),
-                step=int(bt_cfg.get("step", 1)),
-                window=int(bt_cfg.get("window", 24)),
-                seasonal_period=int(bt_cfg.get("seasonal_period", 0)) or None,
-            )
-            data_blk["backtest"] = bt
-            if bt.get("y_true") and bt.get("y_pred"):
-                data_blk["backtest_metrics"] = _basic_metrics(
-                    np.asarray(bt.get("y_true")),
-                    np.asarray(bt.get("y_pred")),
-                )
+        _maybe_run_backtest(data_blk, series_source=data_blk.get("dataframe"), value_col_name=value_col)
     except Exception:
         pass
 
@@ -1044,56 +985,17 @@ def run_train_predict_pipeline(config):
         pass
 
     # 训练真值
-    train_true = None
-    try:
-        train_df_sc = data_blk.get('train_df_sc')
-        if isinstance(train_df_sc, pd.DataFrame) and len(train_df_sc) > 0 and scaler is not None:
-            train_true = _inverse_series_1d_from_df_scaled(train_df_sc, scaler, config, value_col)
-    except Exception as e:
-        print(f"[pipeline] Warning: failed to build training_true series: {e}")
+    train_true = _build_training_true_series(data_blk, emit_warning=True)
 
     # 构造连续序列（回退分支） + (可选) pipeline-side plot
     try:
-        train_df_plot = train_true.to_frame("training_true") if isinstance(train_true, pd.Series) else pd.DataFrame(columns=["training_true"])
-        val_dense2  = None if (isinstance(val_dense, pd.DataFrame) and val_dense.empty) else val_dense
-        test_dense2 = None if (isinstance(test_dense, pd.DataFrame) and test_dense.empty) else test_dense
-
-        # Continuous-series payload removed: app handles plotting and does not require these series.
-        full_truth = None
-        full_pred_cont = None
-        phase_mask = None
-
-        viz_cfg = (config.get("visualization") or {})
-        do_plot = bool(viz_cfg.get("pipeline_plot", False)) or (os.environ.get("TSF_PIPELINE_PLOT", "0") == "1")
-        if do_plot:
-            from visualizations.plot import plot_results
-            payload = {
-                "val_dense": val_dense2, "test_dense": test_dense2,
-                "val_long": None, "test_long": None,
-                "split": {"train_len": train_len, "val_len": val_len, "test_len": test_len},
-                "full_truth": full_truth, "full_pred_cont": full_pred_cont, "phase_mask": phase_mask,
-            }
-
-            try:
-                print(f"[pipeline] payload check (fallback) -> truth:{type(payload['full_truth'])}, "
-                      f"pred:{type(payload['full_pred_cont'])}, "
-                      f"lens: {len(payload['full_truth']) if isinstance(payload['full_truth'], pd.Series) else 'NA'} / "
-                      f"{len(payload['full_pred_cont']) if isinstance(payload['full_pred_cont'], pd.Series) else 'NA'}")
-            except Exception:
-                pass
-
-            plot_results(
-                train_df=train_df_plot,
-                val_df_aligned=val_dense2 if isinstance(val_dense2, pd.DataFrame) else None,
-                test_df_aligned=test_dense2 if isinstance(test_dense2, pd.DataFrame) else None,
-                time_col=time_col, value_col=value_col,
-                title="Training / Validation / Test - Full Span (Dense 1-step)",
-                payload=payload,
-                val_long=None, test_long=None,
-                train_len=int(train_len) if train_len is not None else (len(train_true) if isinstance(train_true, pd.Series) else None),
-                val_len=int(val_len) if val_len is not None else None,
-                test_len=int(test_len) if test_len is not None else None,
-            )
+        _maybe_pipeline_plot(
+            train_true_series=train_true,
+            val_dense_df=val_dense,
+            test_dense_df=test_dense,
+            split_info={"train_len": train_len, "val_len": val_len, "test_len": test_len},
+            title="Training / Validation / Test - Full Span (Dense 1-step)",
+        )
     except Exception as e:
         print(f"[pipeline] Info: pipeline_plot skipped or failed: {e}")
 
@@ -1143,52 +1045,27 @@ def normalize_results_for_app(res, cfg: dict, src_df: pd.DataFrame) -> dict:
       {'status','message','metrics':{'validation','test'}, 'data':{...}, 'artifacts':{...}}
     This is a UI-facing normalization layer; it does not mutate training artifacts.
     """
-    out: dict = {"status": "ok", "message": None, "metrics": {}, "data": {}, "artifacts": (cfg.get("artifacts") or {})}
+    out: dict = ensure_run_result(res if isinstance(res, dict) else {})
+    out["artifacts"] = (cfg.get("artifacts") or {})
     data_blk = (cfg.get("data") or {}) if isinstance(cfg, dict) else {}
     if not isinstance(data_blk, dict):
         data_blk = {}
 
     if isinstance(res, dict):
-        out.update(res)
-        out.setdefault("data", {})
-        out.setdefault("metrics", {})
-        out.setdefault("artifacts", (cfg.get("artifacts") or {}))
+        out.update(ensure_run_result(res))
+        out["artifacts"] = out.get("artifacts") or (cfg.get("artifacts") or {})
     elif isinstance(res, (tuple, list)):
-        # Most trainers return (model, result_df); detailed payloads are stored in cfg['data']
-        out.setdefault("data", {})
-        out.setdefault("metrics", {})
-        out.setdefault("artifacts", (cfg.get("artifacts") or {}))
+        out = ensure_run_result(out)
+        out["artifacts"] = (cfg.get("artifacts") or {})
     else:
         out["status"] = "error"
         out["message"] = "Unknown pipeline return type"
-        out.setdefault("data", {})
-        out.setdefault("metrics", {})
-
-    out_data = out.get("data") if isinstance(out.get("data"), dict) else {}
-    out_metrics = out.get("metrics") if isinstance(out.get("metrics"), dict) else {}
-    out["data"] = out_data
-    out["metrics"] = out_metrics
+        out = ensure_run_result(out)
 
     # ---- Backfill data from cfg['data'] ----
-    for k in (
-        "split",
-        "val_dense",
-        "test_dense",
-        "val_long",
-        "test_long",
-        "baseline_metrics",
-        "drift",
-        "backtest",
-        "backtest_metrics",
-        "degraded",
-        "degraded_mode",
-        "degraded_reason",
-        "degraded_error",
-        "missing_required_core",
-        "dropped_optional_features",
-    ):
-        if k not in out_data and k in data_blk:
-            out_data[k] = data_blk.get(k)
+    out_data = out["data"]
+    out_metrics = out["metrics"]
+    backfill_missing(out_data, data_blk, RUN_RESULT_DATA_KEYS)
 
     # Ensure split always exists for UI
     if "split" not in out_data or not isinstance(out_data.get("split"), dict):
@@ -1197,34 +1074,17 @@ def normalize_results_for_app(res, cfg: dict, src_df: pd.DataFrame) -> dict:
         v = int(n * 0.2)
         out_data["split"] = {"train_len": t, "val_len": v, "test_len": n - t - v}
 
-    # ---- Backfill metrics ----
-    def _ensure_metrics_slot(name: str) -> dict:
-        m = out_metrics.get(name)
-        if isinstance(m, dict):
-            return m
-        m = {}
-        out_metrics[name] = m
-        return m
-
     # data_blk may hold val_metrics/test_metrics
-    if "validation" not in out_metrics:
-        vm = _pick_first_dict(data_blk.get("val_metrics"), data_blk.get("metrics_val"), data_blk.get("validation_metrics"))
-        if isinstance(vm, dict) and vm:
-            out_metrics["validation"] = vm
-    if "test" not in out_metrics:
-        tm = _pick_first_dict(data_blk.get("test_metrics"), data_blk.get("metrics_test"), data_blk.get("testing_metrics"))
-        if isinstance(tm, dict) and tm:
-            out_metrics["test"] = tm
-    if "baseline" not in out_metrics and isinstance(data_blk.get("baseline_metrics"), dict):
-        out_metrics["baseline"] = data_blk.get("baseline_metrics")
-    if "drift" not in out_metrics and isinstance(data_blk.get("drift"), dict):
-        out_metrics["drift"] = data_blk.get("drift")
+    backfill_metric_slot(out_metrics, "validation", _pick_first_dict(data_blk.get("val_metrics"), data_blk.get("metrics_val"), data_blk.get("validation_metrics")))
+    backfill_metric_slot(out_metrics, "test", _pick_first_dict(data_blk.get("test_metrics"), data_blk.get("metrics_test"), data_blk.get("testing_metrics")))
+    backfill_metric_slot(out_metrics, "baseline", data_blk.get("baseline_metrics"))
+    backfill_metric_slot(out_metrics, "drift", data_blk.get("drift"))
 
     # root cfg metrics may store flat values
     root_m = cfg.get("metrics") if isinstance(cfg.get("metrics"), dict) else {}
     if isinstance(root_m, dict):
-        vm = _ensure_metrics_slot("validation")
-        tm = _ensure_metrics_slot("test")
+        vm = ensure_metric_slot(out_metrics, "validation")
+        tm = ensure_metric_slot(out_metrics, "test")
         if vm.get("rmse") is None and "val_rmse" in root_m:
             vm["rmse"] = root_m.get("val_rmse")
         if vm.get("mape") is None and "val_mape" in root_m:
@@ -1242,7 +1102,7 @@ def normalize_results_for_app(res, cfg: dict, src_df: pd.DataFrame) -> dict:
         if tm.get("smape") is None and "test_smape" in root_m:
             tm["smape"] = root_m.get("test_smape")
 
-    return out
+    return ensure_run_result(out)
 
 
 def looks_like_required_core_error(err: Exception) -> bool:
@@ -1376,6 +1236,18 @@ def run_pipeline_and_update_state(
     if callable(progress_cb):
         config["callbacks"]["progress"] = progress_cb
 
+    def _ensure_result_data_block(obj) -> dict:
+        data = obj.get("data")
+        if not isinstance(data, dict):
+            data = {}
+            obj["data"] = data
+        return data
+
+    def _sync_result_data_field(key: str, value) -> None:
+        for target in (snap_results, results):
+            data = _ensure_result_data_block(target)
+            data[key] = value
+
     # Make raw df discoverable by pipeline (both old/new keys)
     config["dataframe"] = df.copy()
     config.setdefault("data", {})
@@ -1412,10 +1284,7 @@ def run_pipeline_and_update_state(
         }
         return payload
 
-    try:
-        config["data"]["all_feature_cols"] = list(feature_cols or [])
-    except Exception:
-        pass
+    config["data"]["all_feature_cols"] = list(feature_cols or [])
 
     try:
         # Validate minimal run schema (time_col/value_col/model_name/features).
@@ -1442,68 +1311,57 @@ def run_pipeline_and_update_state(
         else:
             err_stage, err_action = _infer_error_stage_and_action(e, default_stage="train")
             results = _build_error_payload(e, stage=err_stage, action=err_action)
-            results = _build_error_payload(e, stage="train", action="fail")
 
     # Strip heavy objects and keep artifacts safe
     strip_heavy_inplace(config)
-    if isinstance(results, dict):
-        results["artifacts"] = safe_artifacts_from_config(config)
-        train_meta = ((config.get("data") or {}).get("train_run_metadata") or (config.get("artifacts") or {}).get("train_run_metadata"))
-        if isinstance(train_meta, dict):
-            results.setdefault("data", {})
-            results["data"]["train_run_metadata"] = dict(train_meta)
-        # Persist feature contract if present (non-Informer path)
-        try:
-            rep = (config.get("data") or {}).get("feature_prep_report")
-            save_feature_contract_if_any(rep if isinstance(rep, dict) else {}, config.get("artifacts") or {})
-        except Exception:
-            pass
+    results["artifacts"] = safe_artifacts_from_config(config)
+    train_meta = ((config.get("data") or {}).get("train_run_metadata") or (config.get("artifacts") or {}).get("train_run_metadata"))
+    if isinstance(train_meta, dict):
+        _ensure_result_data_block(results)["train_run_metadata"] = dict(train_meta)
+    try:
+        rep = (config.get("data") or {}).get("feature_prep_report")
+        save_feature_contract_if_any(rep if isinstance(rep, dict) else {}, config.get("artifacts") or {})
+    except Exception:
+        pass
 
-        # Leaderboard + report
-        try:
-            from evaluation.report import build_leaderboard, write_leaderboard_csv, write_report_html
+    try:
+        from evaluation.report import build_leaderboard, write_leaderboard_csv, write_report_html
 
-            arts = config.get("artifacts") or {}
-            run_dir = str(arts.get("run_dir") or "")
-            if not run_dir:
-                model_path = arts.get("model_path")
-                run_dir = os.path.dirname(model_path) if isinstance(model_path, str) else ""
-            if run_dir:
-                leaderboard_path = Path(run_dir) / "leaderboard.csv"
-                report_path = Path(run_dir) / "report.html"
-
-                metrics = results.get("metrics", {}) if isinstance(results, dict) else {}
-                base_metrics = (config.get("data") or {}).get("baseline_metrics")
-                drift = (config.get("data") or {}).get("drift")
-                display_name = str(config.get("model_alias") or model_name)
-                df_lb = build_leaderboard(
-                    model_name=display_name,
-                    metrics=metrics,
-                    baseline_metrics=base_metrics if isinstance(base_metrics, dict) else {},
-                )
-                write_leaderboard_csv(df_lb, leaderboard_path)
-                write_report_html(
-                    path=report_path,
-                    model_name=display_name,
-                    dataset_id=str(arts.get("dataset_id") or ""),
-                    metrics=metrics,
-                    baseline_metrics=base_metrics if isinstance(base_metrics, dict) else {},
-                    drift=drift if isinstance(drift, dict) else None,
-                    leaderboard_path=str(leaderboard_path),
-                    artifacts=arts if isinstance(arts, dict) else {},
-                )
-
-                results.setdefault("data", {})
-                results["data"]["leaderboard"] = df_lb.to_dict(orient="records")
-                results["data"]["leaderboard_path"] = str(leaderboard_path)
-                results["data"]["report_path"] = str(report_path)
-
-                if isinstance(arts, dict):
-                    arts["leaderboard_path"] = str(leaderboard_path)
-                    arts["report_path"] = str(report_path)
-                    config["artifacts"] = arts
-        except Exception:
-            pass
+        arts = config.get("artifacts") or {}
+        run_dir = _resolve_run_dir(arts)
+        if run_dir:
+            leaderboard_path = Path(run_dir) / "leaderboard.csv"
+            report_path = Path(run_dir) / "report.html"
+            metrics = results.get("metrics", {})
+            base_metrics = (config.get("data") or {}).get("baseline_metrics")
+            drift = (config.get("data") or {}).get("drift")
+            display_name = str(config.get("model_alias") or model_name)
+            df_lb = build_leaderboard(
+                model_name=display_name,
+                metrics=metrics,
+                baseline_metrics=base_metrics if isinstance(base_metrics, dict) else {},
+            )
+            write_leaderboard_csv(df_lb, leaderboard_path)
+            write_report_html(
+                path=report_path,
+                model_name=display_name,
+                dataset_id=str(arts.get("dataset_id") or ""),
+                metrics=metrics,
+                baseline_metrics=base_metrics if isinstance(base_metrics, dict) else {},
+                drift=drift if isinstance(drift, dict) else None,
+                leaderboard_path=str(leaderboard_path),
+                artifacts=arts if isinstance(arts, dict) else {},
+            )
+            results_data = _ensure_result_data_block(results)
+            results_data["leaderboard"] = df_lb.to_dict(orient="records")
+            results_data["leaderboard_path"] = str(leaderboard_path)
+            results_data["report_path"] = str(report_path)
+            if isinstance(arts, dict):
+                arts["leaderboard_path"] = str(leaderboard_path)
+                arts["report_path"] = str(report_path)
+                config["artifacts"] = arts
+    except Exception:
+        pass
 
     snap_meta = {
         "uploaded_name": uploaded_name,
@@ -1513,6 +1371,25 @@ def run_pipeline_and_update_state(
         "run_id": (config.get("artifacts") or {}).get("run_id") or config.get("run_id"),
     }
     snap_results = cacheable_results(results)
+
+    def _choose_plot_ts(dfr: pd.DataFrame, fallback_len: int):
+        if isinstance(dfr.index, pd.DatetimeIndex):
+            return dfr.index
+        if time_col in dfr.columns:
+            return dfr[time_col]
+        if "timestamp" in dfr.columns:
+            return dfr["timestamp"]
+        return pd.date_range(start=pd.Timestamp.today().normalize(), periods=max(1, int(fallback_len)), freq="D")
+
+    def _build_dense_plot(dense_df: Optional[pd.DataFrame], fallback_len: int):
+        if not isinstance(dense_df, pd.DataFrame) or not {"y_true", "yhat"} <= set(dense_df.columns):
+            return None
+        return pack_plot_series(_choose_plot_ts(dense_df, fallback_len or len(dense_df)), dense_df["y_true"], dense_df["yhat"], max_n=4000)
+
+    def _build_long_plot(long_payload: Optional[dict]):
+        if not isinstance(long_payload, dict):
+            return None
+        return pack_plot_series(long_payload.get("timestamps"), long_payload.get("y_true"), long_payload.get("yhat"), max_n=4000)
 
     # ---- Build plot_data + mean_abs_true_* (FIX: avoid DataFrame truthiness) ----
     split = (results.get("data", {}) or {}).get("split") or (config.get("data", {}) or {}).get("split") or {}
@@ -1546,15 +1423,6 @@ def run_pipeline_and_update_state(
         vlong = _pick_first_dict(rdata.get("val_long"), dblk.get("val_long"), rdata.get("val_tail"), dblk.get("val_tail"))
         tlong = _pick_first_dict(rdata.get("test_long"), dblk.get("test_long"), rdata.get("test_tail"), dblk.get("test_tail"))
 
-        def _choose_ts(dfr: pd.DataFrame, fallback_len: int):
-            if isinstance(dfr.index, pd.DatetimeIndex):
-                return dfr.index
-            if time_col in dfr.columns:
-                return dfr[time_col]
-            if "timestamp" in dfr.columns:
-                return dfr["timestamp"]
-            return pd.date_range(start=pd.Timestamp.today().normalize(), periods=max(1, int(fallback_len)), freq="D")
-
         if t_len > 0 and value_col in df.columns:
             try:
                 train_slice = df.iloc[:t_len]
@@ -1564,20 +1432,15 @@ def run_pipeline_and_update_state(
             except Exception:
                 train_plot = None
 
-        if isinstance(vd, pd.DataFrame) and {"y_true", "yhat"} <= set(vd.columns):
-            val_plot = pack_plot_series(_choose_ts(vd, v_len or len(vd)), vd["y_true"], vd["yhat"], max_n=4000)
-        elif isinstance(vlong, dict):
-            val_plot = pack_plot_series(vlong.get("timestamps"), vlong.get("y_true"), vlong.get("yhat"), max_n=4000)
+        val_plot = _build_dense_plot(vd, v_len)
+        if val_plot is None:
+            val_plot = _build_long_plot(vlong)
 
-        if isinstance(td, pd.DataFrame) and {"y_true", "yhat"} <= set(td.columns):
-            test_plot = pack_plot_series(_choose_ts(td, te_len or len(td)), td["y_true"], td["yhat"], max_n=4000)
-        elif isinstance(tlong, dict):
-            test_plot = pack_plot_series(tlong.get("timestamps"), tlong.get("y_true"), tlong.get("yhat"), max_n=4000)
+        test_plot = _build_dense_plot(td, te_len)
+        if test_plot is None:
+            test_plot = _build_long_plot(tlong)
     except Exception as e:
-        try:
-            print(f"[services.pipeline] plot_data build failed: {e}", flush=True)
-        except Exception:
-            pass
+        print(f"[services.pipeline] plot_data build failed: {e}", flush=True)
         train_plot = None
         val_plot = None
         test_plot = None
@@ -1586,8 +1449,8 @@ def run_pipeline_and_update_state(
         try:
             dblk = (config.get("data", {}) or {})
             rdata = (results.get("data", {}) or {})
-            vd_dbg = dblk.get("val_dense") if isinstance(dblk, dict) else None
-            td_dbg = dblk.get("test_dense") if isinstance(dblk, dict) else None
+            vd_dbg = dblk.get("val_dense")
+            td_dbg = dblk.get("test_dense")
             print(
                 "[services.pipeline] plot_data missing | "
                 f"val_dense={type(vd_dbg).__name__} cols={getattr(vd_dbg,'columns',None)} | "
@@ -1599,7 +1462,6 @@ def run_pipeline_and_update_state(
             pass
 
     if train_plot or val_plot or test_plot:
-        snap_results.setdefault("data", {})
         # Coerce any stringified plot blobs back to dict for safety (avoids cached snapshots with stringified dicts).
         def _coerce_plot(p):
             if isinstance(p, str):
@@ -1614,28 +1476,11 @@ def run_pipeline_and_update_state(
             return p
 
         plot_blob = {"train": _coerce_plot(train_plot), "val": _coerce_plot(val_plot), "test": _coerce_plot(test_plot)}
-        snap_results["data"]["plot_data"] = plot_blob
-        try:
-            results.setdefault("data", {})
-            results["data"]["plot_data"] = plot_blob
-        except Exception:
-            pass
+        _sync_result_data_field("plot_data", plot_blob)
     if isinstance(mean_abs_true_val, (int, float)) and np.isfinite(float(mean_abs_true_val)) and float(mean_abs_true_val) > 0:
-        snap_results.setdefault("data", {})
-        snap_results["data"]["mean_abs_true_val"] = float(mean_abs_true_val)
-        try:
-            results.setdefault("data", {})
-            results["data"]["mean_abs_true_val"] = float(mean_abs_true_val)
-        except Exception:
-            pass
+        _sync_result_data_field("mean_abs_true_val", float(mean_abs_true_val))
     if isinstance(mean_abs_true_test, (int, float)) and np.isfinite(float(mean_abs_true_test)) and float(mean_abs_true_test) > 0:
-        snap_results.setdefault("data", {})
-        snap_results["data"]["mean_abs_true_test"] = float(mean_abs_true_test)
-        try:
-            results.setdefault("data", {})
-            results["data"]["mean_abs_true_test"] = float(mean_abs_true_test)
-        except Exception:
-            pass
+        _sync_result_data_field("mean_abs_true_test", float(mean_abs_true_test))
 
     save_last_results_json({"meta": snap_meta, "results": snap_results})
 
@@ -1647,7 +1492,8 @@ def run_pipeline_and_update_state(
         except Exception:
             get_script_run_ctx = None
 
-        if get_script_run_ctx is not None and get_script_run_ctx() is None:
+        ctx = get_script_run_ctx() if get_script_run_ctx is not None else None
+        if get_script_run_ctx is not None and ctx is None:
             return results
 
         st.session_state["last_results"] = snap_results

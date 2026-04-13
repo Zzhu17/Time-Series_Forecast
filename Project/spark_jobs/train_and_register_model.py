@@ -14,8 +14,8 @@ if str(PROJECT_DIR) not in sys.path:
 
 from common import read_table
 from services.data_versioning import compute_dataset_id
+from services.request_utils import resolve_feature_cols
 from services.train_service import run_training_task
-from services.request_utils import auto_feature_cols
 
 
 def _read_table(path: Path) -> pd.DataFrame:
@@ -56,10 +56,14 @@ def main() -> int:
         raise ValueError("Gold data empty")
 
     feature_cols: List[str]
-    if args.feature_cols.strip().lower() == "auto":
-        feature_cols = auto_feature_cols(df.copy(), args.time_col, args.value_col)
-    else:
-        feature_cols = [c.strip() for c in args.feature_cols.split(",") if c.strip()]
+    raw_feature_cols = None if args.feature_cols.strip().lower() == "auto" else [c.strip() for c in args.feature_cols.split(",") if c.strip()]
+    feature_cols = resolve_feature_cols(
+        df,
+        feature_cols=raw_feature_cols,
+        time_col=args.time_col,
+        value_col=args.value_col,
+        auto_select_features=raw_feature_cols is None,
+    )
 
     dataset_version = compute_dataset_id(df)
     run_id = args.run_id or dataset_version

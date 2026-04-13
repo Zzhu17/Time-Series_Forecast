@@ -13,6 +13,7 @@ from services.predict_utils import baseline_predict, predict_with_xgboost
 from services.prediction_payloads import normalize_prediction_payload
 from services.registry import get_model, latest_model_for_name, list_models
 from services.predict_helpers import load_pickle, prepare_feature_frame, load_json_file
+from services.result_contracts import make_prediction_result
 from services.xgb_loader import XGBPredictor
 from utils.feature_contract import (
     ensure_calendar_features,
@@ -745,31 +746,23 @@ def run_prediction(payload: Dict[str, Any]) -> Dict[str, Any]:
                         horizon,
                         {"default": {"time_col": time_col, "value_col": value_col}},
                     )
-                    return {
-                        "status": "ok",
-                        "predictions": np.asarray(preds, dtype=float).reshape(-1).tolist(),
-                        "degraded": False,
-                        "degraded_reason": None,
-                        "fallback_model": None,
-                        "used_model": model,
-                        "reason": None,
-                        "contract_report": contract_report,
-                    }
+                    return make_prediction_result(
+                        predictions=np.asarray(preds, dtype=float).reshape(-1).tolist(),
+                        degraded=False,
+                        used_model=model,
+                        contract_report=contract_report,
+                    )
             except Exception:
                 pass
 
         if model == "baseline":
             preds = baseline_predict(df, value_col, horizon)
-            return {
-                "status": "ok",
-                "predictions": preds.tolist(),
-                "degraded": False,
-                "degraded_reason": None,
-                "fallback_model": None,
-                "used_model": "baseline",
-                "reason": None,
-                "contract_report": contract_report,
-            }
+            return make_prediction_result(
+                predictions=preds.tolist(),
+                degraded=False,
+                used_model="baseline",
+                contract_report=contract_report,
+            )
 
         if model_id or model_version or model in ("xgboost", "informer", "randomforest", "lstm", "arima", "prophet"):
             try:
@@ -807,31 +800,29 @@ def run_prediction(payload: Dict[str, Any]) -> Dict[str, Any]:
             fallback_model = _infer_fallback_model(degraded=bool(degraded), used_model=str(used_model), default_model="baseline")
             if degraded:
                 observe_degrade(model=used_model or model, reason=normalize_degrade_reason(reason))
-            return {
-                "status": "ok",
-                "predictions": preds.tolist(),
-                "degraded": bool(degraded),
-                "degraded_reason": reason or None,
-                "fallback_model": fallback_model,
-                "used_model": used_model,
-                "reason": reason or None,
-                "contract_report": contract_report,
-            }
+            return make_prediction_result(
+                predictions=preds.tolist(),
+                degraded=bool(degraded),
+                degraded_reason=reason or None,
+                fallback_model=fallback_model,
+                used_model=used_model,
+                reason=reason or None,
+                contract_report=contract_report,
+            )
 
         preds = baseline_predict(df, value_col, horizon)
         degraded_flag = True
         degraded_reason = "model_not_supported"
         observe_degrade(model=model, reason="model_not_supported")
-        return {
-            "status": "ok",
-            "predictions": preds.tolist(),
-            "degraded": True,
-            "degraded_reason": "model_not_supported",
-            "fallback_model": "baseline",
-            "used_model": f"{model}->baseline",
-            "reason": "model_not_supported",
-            "contract_report": contract_report,
-        }
+        return make_prediction_result(
+            predictions=preds.tolist(),
+            degraded=True,
+            degraded_reason="model_not_supported",
+            fallback_model="baseline",
+            used_model=f"{model}->baseline",
+            reason="model_not_supported",
+            contract_report=contract_report,
+        )
     finally:
         try:
             if degraded_flag:

@@ -96,3 +96,35 @@ def test_run_training_task_registers_archived_when_gate_fails(monkeypatch):
     gate = captured["params"].get("quality_gate")
     assert isinstance(gate, dict)
     assert gate.get("passed") is False
+
+
+def test_run_training_task_falls_back_to_summary_training_params(monkeypatch):
+    monkeypatch.setattr("services.train_service.normalize_training_payload", lambda *args, **kwargs: _normalized_payload("prophet"))
+
+    class _PipelineModule:
+        @staticmethod
+        def run_pipeline_and_update_state(**kwargs):
+            return {
+                "metrics": {"test": {"nrmse": 0.2}},
+                "artifacts": {},
+                "data": {"degraded": False},
+            }
+
+    monkeypatch.setattr("services.train_service.load_pipeline_module", lambda: _PipelineModule())
+    monkeypatch.setattr("services.train_service.list_models", lambda limit=20: [])
+    monkeypatch.setattr("services.train_service._write_latest_report", lambda *args, **kwargs: None)
+    monkeypatch.setattr("services.train_service._purge_old_runs", lambda *args, **kwargs: None)
+
+    captured = {}
+
+    def _fake_register_model(**kwargs):
+        captured.update(kwargs)
+        return {"id": "m3", **kwargs}
+
+    monkeypatch.setattr("services.train_service.register_model", _fake_register_model)
+
+    out = run_training_task({"rows": []}, task_id="gate-summary-case", emit_metrics=False)
+    assert out["training_params"]["model_name"] == "prophet"
+    training_params_path = captured["artifacts"].get("training_params_path")
+    payload = json.loads(Path(training_params_path).read_text(encoding="utf-8"))
+    assert payload.get("model_name") == "prophet"

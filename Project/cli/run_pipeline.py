@@ -18,7 +18,8 @@ yaml = importlib.import_module("yaml")
 
 from configs.config import load_yaml_config
 from services.pipeline import run_pipeline_and_update_state
-from services.request_utils import auto_feature_cols
+from services.request_utils import resolve_feature_cols
+from services.snapshot import safe_jsonify
 from services.train_service import build_training_config
 
 
@@ -55,7 +56,7 @@ def _parse_feature_cols(raw: Optional[str]) -> Optional[List[str]]:
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+        json.dump(safe_jsonify(payload), f, ensure_ascii=False, indent=2)
 
 
 def main() -> int:
@@ -83,8 +84,13 @@ def main() -> int:
 
     config = _load_config(args.config)
     feature_cols = _parse_feature_cols(args.feature_cols)
-    if not feature_cols:
-        feature_cols = auto_feature_cols(df.copy(), args.time_col, args.value_col)
+    feature_cols = resolve_feature_cols(
+        df,
+        feature_cols=feature_cols,
+        time_col=args.time_col,
+        value_col=args.value_col,
+        auto_select_features=not feature_cols,
+    )
 
     run_id = str(uuid.uuid4())
     config = build_training_config(
@@ -119,7 +125,7 @@ def main() -> int:
     }
     _write_json(Path(args.output), payload)
 
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    print(json.dumps(safe_jsonify(payload), ensure_ascii=False, indent=2))
     return 0
 
 

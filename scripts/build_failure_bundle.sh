@@ -34,7 +34,9 @@ python -m pip freeze > "${bundle_dir}/pip-freeze.txt" || echo "pip freeze failed
   echo "sha=${GITHUB_SHA:-local}"
 } > "${bundle_dir}/test-matrix-scenario.txt"
 
-if [ -f "MODEL_READINESS_REPORT.md" ]; then
+if [ -f "docs/repo/MODEL_READINESS_REPORT.md" ]; then
+  cp "docs/repo/MODEL_READINESS_REPORT.md" "${bundle_dir}/quality-gate-report.md"
+elif [ -f "MODEL_READINESS_REPORT.md" ]; then
   cp "MODEL_READINESS_REPORT.md" "${bundle_dir}/quality-gate-report.md"
 elif [ -f "Project/artifacts/latest/report.json" ]; then
   cp "Project/artifacts/latest/report.json" "${bundle_dir}/quality-gate-report.json"

@@ -4,8 +4,8 @@ import pandas as pd
 import random
 import numpy as np
 
+from training.adaptor.common import build_adapter_training_params, infer_split_lengths
 from training.train_lstm import train_lstm_model
-from training.params_schema import build_training_params
 from utils.array_utils import clean_dataframe
 
 def _read_defaults(config: dict) -> tuple[str, str]:
@@ -131,21 +131,19 @@ def train_lstm_model_7tuple(df: pd.DataFrame, config: dict):
         raise ValueError("train_lstm_model must return 7-tuple")
 
     val_true, val_pred, test_true, test_pred, final_model, test_forecast_df, raw_params = out
-    v_len = int(len(val_true)) if val_true is not None else 0
-    te_len = int(len(test_true)) if test_true is not None else 0
-    tr_len = max(0, int(len(df)) - v_len - te_len)
     raw = raw_params if isinstance(raw_params, dict) else {}
-    split = {"train_len": tr_len, "val_len": v_len, "test_len": te_len}
-    data_signature = {"rows": int(len(df)), "time_col": time_col, "value_col": value_col, "feature_cols": list(config.get("data", {}).get("all_feature_cols") or [])}
-    training_params = build_training_params(
+    split = infer_split_lengths(df, val_true, test_true)
+    training_params = build_adapter_training_params(
         model="lstm",
+        df=df,
+        config=config,
         split=split,
         core_hparams=raw,
         runtime={"fit_status": "trained", "seed": seed},
-        data_signature=data_signature,
         legacy_fields={"fit_status": "trained", **raw},
+        artifacts=config.setdefault("artifacts", {}),
+        feature_cols=list(config.get("data", {}).get("all_feature_cols") or []),
     )
-    config.setdefault("artifacts", {})["training_params"] = dict(training_params)
     return val_true, val_pred, test_true, test_pred, final_model, test_forecast_df, training_params
 
 

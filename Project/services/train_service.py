@@ -147,6 +147,18 @@ def _persist_training_params(task_id: str, training_params: Dict[str, Any]) -> s
     return str(out_path)
 
 
+def _resolve_training_params(
+    *,
+    normalized: Dict[str, Any],
+    artifacts: Dict[str, Any],
+    model_name: str,
+    task_id: str,
+) -> Dict[str, Any]:
+    summary = _training_params_summary(normalized, task_id=task_id)
+    trainer_params = artifacts.get(f"{str(model_name).lower()}_params") if isinstance(artifacts, dict) else None
+    return dict(trainer_params) if isinstance(trainer_params, dict) else summary
+
+
 def _model_filename(model_name: str) -> str:
     key = str(model_name).lower()
     if key == "xgboost":
@@ -468,17 +480,13 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
         data = results.get("data", {}) if isinstance(results, dict) else {}
         degraded = bool(data.get("degraded", False))
         degraded_reason = data.get("degraded_reason")
-        training_params = _training_params_summary(normalized, task_id=task_id)
+        training_params = _resolve_training_params(
+            normalized=normalized,
+            artifacts=artifacts,
+            model_name=model_name,
+            task_id=task_id,
+        )
         artifacts["training_params"] = training_params
-        try:
-            run_dir = artifacts.get("run_dir")
-            if isinstance(run_dir, str) and run_dir:
-                p = Path(run_dir) / "training_params.json"
-                p.parent.mkdir(parents=True, exist_ok=True)
-                p.write_text(json.dumps(training_params, ensure_ascii=False, indent=2), encoding="utf-8")
-                artifacts["training_params_path"] = str(p)
-        except Exception:
-            pass
         fallback_model = data.get("degraded_mode") if degraded else None
         if degraded and emit_metrics:
             observe_degrade(model=model_alias or model_name, reason=degraded_reason)
@@ -494,8 +502,6 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
             "contract_report": contract_report,
             "training_params": training_params,
         }
-        trainer_params = artifacts.get(f"{str(model_name).lower()}_params") if isinstance(artifacts, dict) else None
-        params["training_params"] = trainer_params if isinstance(trainer_params, dict) else {}
         gate = evaluate_training_gate(metrics=metrics if isinstance(metrics, dict) else {}, degraded=degraded)
         gate_eval = _evaluate_quality_gate(config, metrics if isinstance(metrics, dict) else {})
         gate_failed_reason = gate_eval.get("failed_reason")
@@ -514,7 +520,7 @@ def run_training_task(payload: Dict[str, Any], *, task_id: str, emit_metrics: bo
             params["quality_gate_threshold_suggestion"] = threshold_suggestion
         model_stage = "candidate" if gate_passed else "archived"
         if isinstance(artifacts, dict):
-            artifacts["training_params_path"] = _persist_training_params(task_id, params["training_params"])
+            artifacts["training_params_path"] = _persist_training_params(task_id, training_params)
             artifacts["quality_gate"] = gate
             artifacts["gate_decision_trace"] = gate_eval.get("trace", [])
             if threshold_suggestion is not None:

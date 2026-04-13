@@ -8,13 +8,11 @@ from pydantic import ValidationError
 from schemas.training import TrainingPayload
 from services.contract_utils import (
     apply_hybrid_preset,
-    build_feature_contract_report,
     coerce_rows,
-    normalize_feature_cols,
     normalize_model_name,
+    resolve_feature_contract,
     validate_required_columns,
 )
-from services.request_utils import auto_feature_cols
 
 
 def normalize_training_payload(
@@ -43,21 +41,12 @@ def normalize_training_payload(
 
     validate_required_columns(df, parsed.time_col, parsed.value_col)
 
-    feature_cols = list(parsed.feature_cols or [])
-    if not feature_cols and auto_select_features:
-        feature_cols = auto_feature_cols(df.copy(), parsed.time_col, parsed.value_col)
-
-    feature_cols, normalize_report = normalize_feature_cols(
-        feature_cols,
-        time_col=parsed.time_col,
-        value_col=parsed.value_col,
-    )
-    contract_report = build_feature_contract_report(
+    feature_cols, contract_report = resolve_feature_contract(
         df,
         time_col=parsed.time_col,
         value_col=parsed.value_col,
-        feature_cols=feature_cols,
-        normalize_report=normalize_report,
+        feature_cols=list(parsed.feature_cols or []),
+        auto_select_features=auto_select_features,
     )
 
     normalized = parsed.dict()

@@ -1,7 +1,13 @@
 import pandas as pd
 import random
 import numpy as np
-from training.params_schema import build_training_params
+from training.adaptor.common import (
+    build_adapter_training_params,
+    extract_dense_predictions,
+    extract_split_predictions,
+    infer_split_lengths,
+)
+
 
 def _apply_informer_smoke_config(config: dict) -> None:
     training_cfg = (config.get("training") or {})
@@ -11,6 +17,14 @@ def _apply_informer_smoke_config(config: dict) -> None:
     inf_cfg = config.setdefault("model_config", {}).setdefault("Informer", {})
     inf_cfg["batch_size"] = min(int(inf_cfg.get("batch_size", 32)), int(smoke_cfg.get("batch_size", 8)))
     inf_cfg["n_epochs"] = min(int(inf_cfg.get("n_epochs", 10)), int(smoke_cfg.get("epochs", 2)))
+
+
+def _smoke_mode_enabled(config: dict) -> bool:
+    if bool(config.get("smoke_mode", False)):
+        return True
+    smoke_cfg = ((config.get("training") or {}).get("smoke") or {})
+    return bool(smoke_cfg.get("enabled", False))
+
 
 def train_informer_model_7tuple(df, config):
     """
@@ -29,9 +43,10 @@ def train_informer_model_7tuple(df, config):
     random.seed(seed)
     np.random.seed(seed)
     arts = config.setdefault("artifacts", {})
-    arts["training_meta"] = {"model": "informer", "seed": seed, "smoke_mode": bool(config.get("smoke_mode", False))}
-    if bool(config.get("smoke_mode", False)):
-        config.setdefault("model_config", {}).setdefault("Informer", {})["epochs"] = 1
+    smoke_mode = _smoke_mode_enabled(config)
+    arts["training_meta"] = {"model": "informer", "seed": seed, "smoke_mode": smoke_mode}
+    if smoke_mode:
+        config.setdefault("model_config", {}).setdefault("Informer", {})["n_epochs"] = 1
     try:
         final_model, result_df = train_informer_model(config)
     except Exception as exc:
@@ -39,16 +54,6 @@ def train_informer_model_7tuple(df, config):
 
     # 优先使用训练过程写回的 dense 输出（严格对齐 6:2:2 的 val/test 段长度）
     data_blk = config.get("data", {}) or {}
-
-    def _extract_from_df(df_like):
-        if not isinstance(df_like, pd.DataFrame):
-            return None, None
-        if not {"y_true", "yhat"} <= set(df_like.columns):
-            return None, None
-        y_t = np.asarray(df_like["y_true"].to_numpy(), dtype=float).reshape(-1)
-        y_h = np.asarray(df_like["yhat"].to_numpy(), dtype=float).reshape(-1)
-        L = min(len(y_t), len(y_h))
-        return y_t[:L], y_h[:L]
 
     def _pick_df(*candidates):
         for c in candidates:
@@ -59,63 +64,36 @@ def train_informer_model_7tuple(df, config):
     val_df = _pick_df(data_blk.get("val_dense"), data_blk.get("val_result_df"))
     test_df = _pick_df(data_blk.get("test_dense"), data_blk.get("test_result_df"))
 
-    val_true, val_forecast = _extract_from_df(val_df)
-    test_true, test_forecast = _extract_from_df(test_df)
+    val_true, val_forecast = extract_dense_predictions(val_df)
+    test_true, test_forecast = extract_dense_predictions(test_df)
 
     # 兼容：若 dense 未生成，则回退解析 result_df（但不要再做 80/20，优先用 split）
     if val_true is None or test_true is None:
         val_true = val_forecast = test_true = test_forecast = None
 
         if isinstance(result_df, pd.DataFrame):
-            df_ = result_df.copy()
-            # 常见两种形态：1) 有 phase 列 2) 只有 y_true / yhat 的分段
-            if "phase" in df_.columns:
-                is_val = df_["phase"].astype(str).str.lower().eq("val")
-                is_tst = df_["phase"].astype(str).str.lower().eq("test")
-                if {"y_true", "yhat"} <= set(df_.columns):
-                    val_true      = np.asarray(df_.loc[is_val, "y_true"].to_numpy(), dtype=float).reshape(-1)
-                    val_forecast  = np.asarray(df_.loc[is_val, "yhat"].to_numpy(), dtype=float).reshape(-1)
-                    test_true     = np.asarray(df_.loc[is_tst, "y_true"].to_numpy(), dtype=float).reshape(-1)
-                    test_forecast = np.asarray(df_.loc[is_tst, "yhat"].to_numpy(), dtype=float).reshape(-1)
-            else:
-                # 兜底：若没有 phase，但有 y_true/yhat，则按 config['data']['split'] 切分
-                if {"y_true", "yhat"} <= set(df_.columns):
-                    split = data_blk.get("split") or {}
-                    v = int(split.get("val_len") or 0)
-                    te = int(split.get("test_len") or 0)
-                    if v > 0 and te > 0 and len(df_) >= v + te:
-                        val_part = df_.iloc[-(v + te): -te]
-                        test_part = df_.iloc[-te:]
-                        val_true, val_forecast = _extract_from_df(val_part)
-                        test_true, test_forecast = _extract_from_df(test_part)
-                    else:
-                        # 最后兜底：全当验证（测试为空）
-                        val_true, val_forecast = _extract_from_df(df_)
-                        test_true, test_forecast = np.array([], dtype=float), np.array([], dtype=float)
+            val_true, val_forecast, test_true, test_forecast = extract_split_predictions(
+                result_df.copy(),
+                split=data_blk.get("split") if isinstance(data_blk.get("split"), dict) else None,
+            )
 
     # 统一返回 training_params，便于注册/落盘追踪
-    best_params = {
-        "model_name": "informer",
-        "trainer": "informer_adaptor",
-    }
     split_info = data_blk.get("split") if isinstance(data_blk.get("split"), dict) else {}
-    # 第7位固定 training_params(dict)
-    split = {
-        "train_len": int(split_info.get("train_len") or max(0, len(df) - (len(val_true) if val_true is not None else 0) - (len(test_true) if test_true is not None else 0))),
-        "val_len": int(split_info.get("val_len") or (len(val_true) if val_true is not None else 0)),
-        "test_len": int(split_info.get("test_len") or (len(test_true) if test_true is not None else 0)),
-    }
-    epochs = int(((config.get("model_config") or {}).get("Informer") or {}).get("train_epochs", 0))
-    data_signature = {"rows": int(len(df)), "time_col": config.get("time_col") or config.get("default", {}).get("time_col"), "value_col": config.get("value_col") or config.get("default", {}).get("value_col")}
-    training_params = build_training_params(
+    split = infer_split_lengths(df, val_true, test_true)
+    split["train_len"] = int(split_info.get("train_len") or split["train_len"])
+    split["val_len"] = int(split_info.get("val_len") or split["val_len"])
+    split["test_len"] = int(split_info.get("test_len") or split["test_len"])
+    epochs = int(((config.get("model_config") or {}).get("Informer") or {}).get("n_epochs", 0))
+    training_params = build_adapter_training_params(
         model="informer",
+        df=df,
+        config=config,
         split=split,
         core_hparams={"epochs": epochs},
         runtime={"fit_status": "trained", "seed": seed},
-        data_signature=data_signature,
         legacy_fields={"model_name": "informer", "fit_status": "trained", "epochs": epochs},
+        artifacts=artifacts,
     )
-    artifacts["training_params"] = dict(training_params)
     test_forecast_df = data_blk.get("test_dense") if isinstance(data_blk.get("test_dense"), pd.DataFrame) else data_blk.get("test_result_df")
 
     return (

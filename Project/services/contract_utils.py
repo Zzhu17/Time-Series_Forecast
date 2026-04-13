@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from schemas.contract import FeatureContractReport
+from services.request_utils import resolve_feature_cols
 from utils.feature_contract import is_recomputable_name, parse_recompute_name, safe_time_features
 
 FEATURE_PREPROCESS_VERSION = "contract-v1"
@@ -206,3 +207,33 @@ def build_feature_contract_report(
                 payload[key] = sorted(set(normalize_report.get(key) or []))
 
     return FeatureContractReport(**payload).dict()
+
+
+def resolve_feature_contract(
+    df: pd.DataFrame,
+    *,
+    time_col: str,
+    value_col: str,
+    feature_cols: Optional[List[str]] = None,
+    auto_select_features: bool = False,
+) -> Tuple[List[str], Dict[str, Any]]:
+    resolved_cols = resolve_feature_cols(
+        df,
+        feature_cols=feature_cols,
+        time_col=time_col,
+        value_col=value_col,
+        auto_select_features=auto_select_features,
+    )
+    resolved_cols, normalize_report = normalize_feature_cols(
+        resolved_cols,
+        time_col=time_col,
+        value_col=value_col,
+    )
+    contract_report = build_feature_contract_report(
+        df,
+        time_col=time_col,
+        value_col=value_col,
+        feature_cols=resolved_cols,
+        normalize_report=normalize_report,
+    )
+    return resolved_cols, contract_report

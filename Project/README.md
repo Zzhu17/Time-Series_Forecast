@@ -1,1 +1,3 @@
-See the root `README.md`.
+# Project README
+
+Moved to [docs/repo/subprojects/PROJECT_README.md](../docs/repo/subprojects/PROJECT_README.md).

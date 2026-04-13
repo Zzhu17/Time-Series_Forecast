@@ -78,6 +78,7 @@ Operational references:
 
 - deploy/rollback: `docs/release-runbook.md`
 - degrade incident handling: `docs/runbook-degrade.md`
+- repo-level markdown documents: `docs/repo/`
 
 ## Packaging
 

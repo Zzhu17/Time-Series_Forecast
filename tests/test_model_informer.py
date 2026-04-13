@@ -89,3 +89,48 @@ def test_informer_prediction_structure_stable(monkeypatch: pytest.MonkeyPatch):
     val_true, val_pred, test_true, test_pred, *_ = train_informer_model_7tuple(_df(), _cfg())
     assert len(val_true) == len(val_pred), "val y_true/yhat length mismatch"
     assert len(test_true) == len(test_pred), "test y_true/yhat length mismatch"
+
+
+def test_informer_smoke_mode_uses_n_epochs_and_persists_epoch_count(monkeypatch: pytest.MonkeyPatch):
+    seen = {}
+
+    def _fake_train_informer_model(config):
+        seen["n_epochs"] = config["model_config"]["Informer"]["n_epochs"]
+        result_df = pd.DataFrame(
+            {
+                "phase": ["val", "test"],
+                "y_true": [1.0, 2.0],
+                "yhat": [1.1, 2.1],
+            }
+        )
+        return object(), result_df
+
+    monkeypatch.setattr("models.informer.train.train_informer_model", _fake_train_informer_model)
+
+    cfg = _cfg()
+    cfg["smoke_mode"] = True
+    cfg["model_config"] = {"Informer": {"n_epochs": 7}}
+
+    *_rest, params = train_informer_model_7tuple(_df(), cfg)
+    assert seen["n_epochs"] == 1
+    assert params["epochs"] == 1
+
+
+def test_informer_training_params_use_n_epochs_field(monkeypatch: pytest.MonkeyPatch):
+    def _fake_train_informer_model(_config):
+        result_df = pd.DataFrame(
+            {
+                "phase": ["val", "test"],
+                "y_true": [1.0, 2.0],
+                "yhat": [1.1, 2.1],
+            }
+        )
+        return object(), result_df
+
+    monkeypatch.setattr("models.informer.train.train_informer_model", _fake_train_informer_model)
+
+    cfg = _cfg()
+    cfg["model_config"] = {"Informer": {"n_epochs": 9}}
+
+    *_rest, params = train_informer_model_7tuple(_df(), cfg)
+    assert params["epochs"] == 9

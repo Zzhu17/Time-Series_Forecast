@@ -237,56 +237,35 @@ def _finalize_long_payloads_after_training(model, config):
         or list((config.get('model_config', {}) or {}).get('Informer', {}).get('feature_cols') or [])
     )
     calib_ab    = (data_dict or {}).get('val_calib')  # {'a':..., 'b':...} 或 None
+    logger = logging.getLogger(__name__)
 
-    # ---- VAL 整段（严格均值滚动；已 inverse + 校准）----
-    try:
-        val_df_sc = data_dict.get('val_df_sc')
-        if isinstance(val_df_sc, pd.DataFrame) and len(val_df_sc) > 0:
-            val_full_df, val_long = rolling_predict_segment(
+    def _write_split(split_name: str) -> None:
+        df_sc = data_dict.get(f'{split_name}_df_sc')
+        if not isinstance(df_sc, pd.DataFrame) or df_sc.empty:
+            return
+        full_df, long_payload = rolling_predict_segment(
                 model=model,
-                df_sc=val_df_sc,
+                df_sc=df_sc,
                 scaler=scaler,
                 feature_cols=feature_cols,
                 seq_len=seq_len, label_len=label_len, pred_len=pred_len,
                 step=1, mode="mean",
                 calib=calib_ab,
-            )
-            data_dict['val_result_df'] = val_full_df  # index 为该段时间索引，列 ['y_true','yhat']
-            data_dict['val_long']      = val_long
+        )
+        data_dict[f'{split_name}_result_df'] = full_df
+        data_dict[f'{split_name}_long'] = long_payload
+        tail_df = full_df.tail(min(pred_len, len(full_df)))
+        data_dict[f'{split_name}_tail'] = {
+            "timestamps": tail_df.index.astype(str).tolist(),
+            "y_true": tail_df["y_true"].astype(float).tolist(),
+            "yhat": tail_df["yhat"].astype(float).tolist(),
+        }
 
-            _tail = val_full_df.tail(min(pred_len, len(val_full_df)))
-            data_dict['val_tail'] = {
-                "timestamps": _tail.index.astype(str).tolist(),
-                "y_true": _tail["y_true"].astype(float).tolist(),
-                "yhat":  _tail["yhat"].astype(float).tolist(),
-            }
-    except Exception as e:
-        import logging; logging.warning("[train] finalize VAL long failed: %s", e)
-
-    # ---- TEST 整段（严格均值滚动；已 inverse + 校准）----
-    try:
-        test_df_sc = data_dict.get('test_df_sc')
-        if isinstance(test_df_sc, pd.DataFrame) and len(test_df_sc) > 0:
-            test_full_df, test_long = rolling_predict_segment(
-                model=model,
-                df_sc=test_df_sc,
-                scaler=scaler,
-                feature_cols=feature_cols,
-                seq_len=seq_len, label_len=label_len, pred_len=pred_len,
-                step=1, mode="mean",
-                calib=calib_ab,
-            )
-            data_dict['test_result_df'] = test_full_df
-            data_dict['test_long']      = test_long
-
-            _tail = test_full_df.tail(min(pred_len, len(test_full_df)))
-            data_dict['test_tail'] = {
-                "timestamps": _tail.index.astype(str).tolist(),
-                "y_true": _tail["y_true"].astype(float).tolist(),
-                "yhat":  _tail["yhat"].astype(float).tolist(),
-            }
-    except Exception as e:
-        import logging; logging.warning("[train] finalize TEST long failed: %s", e)
+    for split_name in ("val", "test"):
+        try:
+            _write_split(split_name)
+        except Exception as e:
+            logger.warning("[train] finalize %s long failed: %s", split_name.upper(), e)
 
 def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> Tuple[Any, pd.DataFrame]:
     """
@@ -517,9 +496,10 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
     if missing:
         raise KeyError(f"Informer.feature_cols missing in validation DataFrame: {missing} (no silent fill)")
 
-    config.setdefault('data', {})['all_feature_cols'] = feature_cols
-    config.setdefault('artifacts', {})['feature_cols'] = feature_cols
-    config.setdefault('artifacts', {})['target_idx'] = 0  # value_col fixed at index 0
+    data_blk['all_feature_cols'] = feature_cols
+    artifacts_blk = config.setdefault('artifacts', {})
+    artifacts_blk['feature_cols'] = feature_cols
+    artifacts_blk['target_idx'] = 0  # value_col fixed at index 0
 
     _roll_cfg0 = (config.get('prediction', {}) or {}).get('rolling', {}) or {}
     try:
@@ -539,7 +519,7 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
     }
     calibrate_enabled = bool(_roll_cfg0.get('calibrate', True))
     rolling_snapshot["calibrate"] = calibrate_enabled
-    config.setdefault('data', {})['rolling_snapshot'] = rolling_snapshot
+    data_blk['rolling_snapshot'] = rolling_snapshot
 
     # --- 2.0 窗口参数与数据长度对齐（同时适配 train/val，避免两次 prepare 时参数不一致） ---
     try:
@@ -935,6 +915,19 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
     y_val_true_inversed = _inverse_transform_targets(y_val_true_flat, scaler, config)
 
     x_feature_val = _ensure_timestep_features(x_feature_val, pred_len)
+    data_blk = config.setdefault('data', {})
+
+    def _save_residual_model(model_obj) -> None:
+        residual_model_path = config.get('artifacts', {}).get('residual_model_path')
+        if not residual_model_path:
+            print("Warning: artifacts.residual_model_path not configured; residual model not saved.")
+            return
+        try:
+            os.makedirs(os.path.dirname(residual_model_path), exist_ok=True)
+            joblib.dump(model_obj, residual_model_path)
+            print(f"Residual model saved to {residual_model_path}")
+        except Exception as e:
+            print(f"Warning: failed to save residual model to {residual_model_path}: {e}")
 
     # --- 8. 残差建模与修正（在 val 上拟合，test 可选应用） ---
     final_preds = val_preds_inversed
@@ -946,17 +939,7 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
             y_pred=val_preds_inversed,
             x_features=x_feature_val
         )
-        
-        residual_model_path = config.get('artifacts', {}).get('residual_model_path')
-        if residual_model_path:
-            try:
-                os.makedirs(os.path.dirname(residual_model_path), exist_ok=True)
-                joblib.dump(residual_model, residual_model_path)
-                print(f"Residual model saved to {residual_model_path}")
-            except Exception as e:
-                print(f"Warning: failed to save residual model to {residual_model_path}: {e}")
-        else:
-            print("Warning: artifacts.residual_model_path not configured; residual model not saved.")
+        _save_residual_model(residual_model)
 
         # （可选）测试集 quick-pass，维持向后兼容；整段滚动由 finalize 统一生成
         test_df_sc = config.get('data', {}).get('test_df_sc')
@@ -990,7 +973,7 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
                     test_preds_inversed = _inverse_transform_targets(test_preds_flat, scaler, config)
                     y_test_true_inversed = _inverse_transform_targets(y_test_true_flat, scaler, config)
                     test_final_preds = test_preds_inversed
-                    if use_residual and residual_model is not None:
+                    if residual_model is not None:
                         try:
                             test_preds_3d = test_preds_inversed.reshape(test_preds_scaled.shape)
                             yhat_corr_3d = apply_residual(test_preds_3d, x_feature_test, residual_model)
@@ -1001,24 +984,18 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
                         'y_true': y_test_true_inversed.flatten(),
                         'yhat':  test_final_preds.flatten()
                     })
-                    data_blk = config.setdefault('data', {})
                     data_blk['test_result_df'] = test_result_df
             except Exception as e:
                 print(f"Warning: generating test predictions failed: {e}")
 
     # --- 7.5 将验证集的“窗口级”结果写入 config['data'] 作为兜底 ---
-    try:
-        val_fallback_df = pd.DataFrame({
-            'y_true': y_val_true_inversed.flatten(),
-            'yhat':  final_preds.flatten()
-        })
-        config.setdefault('data', {})['val_result_df'] = val_fallback_df
-    except Exception:
-        pass
+    data_blk['val_result_df'] = pd.DataFrame({
+        'y_true': y_val_true_inversed.flatten(),
+        'yhat':  final_preds.flatten()
+    })
 
     # === 8. 改为“整段密集预测”（h=1, step=1），不再写入 val_long/test_long ===
     try:
-        data_blk = config.setdefault('data', {})
         artifacts_blk = config.setdefault('artifacts', {})
         scaler = artifacts_blk.get('scaler')
         inf_cfg = (config.get('model_config', {}) or {}).get('Informer', {}) or {}
@@ -1028,25 +1005,16 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
         train_df_sc = data_blk.get('train_df_sc')
         val_df_sc   = data_blk.get('val_df_sc')
         test_df_sc  = data_blk.get('test_df_sc')
-        len(train_df_sc) if isinstance(train_df_sc, pd.DataFrame) else 0
         n_val   = len(val_df_sc)   if isinstance(val_df_sc,   pd.DataFrame) else 0
         n_test  = len(test_df_sc)  if isinstance(test_df_sc,  pd.DataFrame) else 0
 
-        # —— 验证段：用 train+val 的上下文做密集预测，取最后 n_val 个点
         if n_val > 0:
             df_all_val = pd.concat([train_df_sc, val_df_sc], axis=0, ignore_index=True)
-            val_dense = _dense_predict_last_k(
-                model, df_all_val, n_val, config, feature_cols, scaler
-            )
-            data_blk['val_dense'] = val_dense
+            data_blk['val_dense'] = _dense_predict_last_k(model, df_all_val, n_val, config, feature_cols, scaler)
 
-        # —— 测试段：用 train+val+test 的上下文做密集预测，取最后 n_test 个点
         if n_test > 0:
             df_all_test = pd.concat([train_df_sc, val_df_sc, test_df_sc], axis=0, ignore_index=True)
-            test_dense = _dense_predict_last_k(
-                model, df_all_test, n_test, config, feature_cols, scaler
-            )
-            data_blk['test_dense'] = test_dense
+            data_blk['test_dense'] = _dense_predict_last_k(model, df_all_test, n_test, config, feature_cols, scaler)
     except Exception as e:
         print(f"Warning: dense prediction failed: {e}")
 
@@ -1165,9 +1133,7 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
     config.setdefault('artifacts', {})['feature_cols'] = list(config.get('data', {}).get('all_feature_cols') or informer_cfg.get('feature_cols') or [value_col])
     config['artifacts']['target_idx'] = 0
 
-    # 优先返回密集预测（连续 1-step），否则退回窗口级结果
     data_blk = config.get('data', {})
-    # 优先返回密集预测（连续 1-step），否则退回窗口级结果
     if isinstance(data_blk.get('val_dense'), pd.DataFrame) and not data_blk['val_dense'].empty:
         result_df = data_blk['val_dense'].reset_index().rename(columns={config.get('default', {}).get('time_col', 'date'): 'timestamp'})
     elif isinstance(data_blk.get('val_result_df'), pd.DataFrame) and not data_blk['val_result_df'].empty:

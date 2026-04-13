@@ -1,8 +1,7 @@
 # training/prophet_adapter.py
 import pandas as pd
-import numpy as np
 from typing import Tuple, Any, cast
-from training.params_schema import build_training_params
+from training.adaptor.common import build_adapter_training_params, extract_split_predictions, infer_split_lengths
 
 def train_prophet_model_7tuple(df, config):
     # 延迟导入避免循环依赖
@@ -14,17 +13,16 @@ def train_prophet_model_7tuple(df, config):
 
     def _to_training_params(raw_params, train_len=0, val_len=0, test_len=0):
         params = raw_params if isinstance(raw_params, dict) else {}
-        split = {"train_len": int(train_len), "val_len": int(val_len), "test_len": int(test_len)}
-        data_signature = {"rows": int(len(df)), "time_col": config.get("time_col") or config.get("default", {}).get("time_col"), "value_col": config.get("value_col") or config.get("default", {}).get("value_col")}
-        out = build_training_params(
+        out = build_adapter_training_params(
             model="prophet",
-            split=split,
+            df=df,
+            config=config,
+            split={"train_len": int(train_len), "val_len": int(val_len), "test_len": int(test_len)},
             core_hparams=params,
             runtime={"fit_status": "trained"},
-            data_signature=data_signature,
             legacy_fields={"fit_status": "trained", "model_name": "prophet", **params},
+            artifacts=artifacts,
         )
-        artifacts["training_params"] = dict(out)
         return out
 
     # If the original trainer already returns a 7-tuple, normalize the 7th slot to training_params(dict).
@@ -47,32 +45,12 @@ def train_prophet_model_7tuple(df, config):
 
     val_true = val_forecast = test_true = test_forecast = None
     test_forecast_df = None
-    best_params = {
-        "model_name": "prophet",
-        "trainer": "prophet_adaptor",
-    }
     training_params = {"model": "prophet"}  # Prophet 通常不调参
 
-    if isinstance(result_df, pd.DataFrame) and {"y_true", "yhat"} <= set(result_df.columns):
-        if "phase" in result_df.columns:
-            is_val = result_df["phase"].astype(str).str.lower().eq("val")
-            is_tst = result_df["phase"].astype(str).str.lower().eq("test")
-            val_true      = result_df.loc[is_val, "y_true"].to_numpy()
-            val_forecast  = result_df.loc[is_val, "yhat"].to_numpy()
-            test_true     = result_df.loc[is_tst, "y_true"].to_numpy()
-            test_forecast = result_df.loc[is_tst, "yhat"].to_numpy()
-        else:
-            n = len(result_df)
-            cut = int(n * 0.8)
-            val_true      = result_df.iloc[:cut].loc[:, "y_true"].to_numpy()
-            val_forecast  = result_df.iloc[:cut].loc[:, "yhat"].to_numpy()
-            test_true     = result_df.iloc[cut:].loc[:, "y_true"].to_numpy()
-            test_forecast = result_df.iloc[cut:].loc[:, "yhat"].to_numpy()
+    val_true, val_forecast, test_true, test_forecast = extract_split_predictions(result_df)
 
-    v_len = int(len(val_true)) if val_true is not None else 0
-    te_len = int(len(test_true)) if test_true is not None else 0
-    tr_len = max(0, int(len(df)) - v_len - te_len)
-    training_params = _to_training_params(training_params, tr_len, v_len, te_len)
+    split = infer_split_lengths(df, val_true, test_true)
+    training_params = _to_training_params(training_params, split["train_len"], split["val_len"], split["test_len"])
     return (val_true, val_forecast, test_true, test_forecast,
             final_model, test_forecast_df, training_params)
 

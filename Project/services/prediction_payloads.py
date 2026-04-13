@@ -8,10 +8,9 @@ from pydantic import ValidationError
 from schemas.api import PredictRequest
 from services.contract_utils import (
     apply_hybrid_preset,
-    build_feature_contract_report,
     coerce_rows,
-    normalize_feature_cols,
     normalize_model_name,
+    resolve_feature_contract,
     validate_required_columns,
 )
 
@@ -43,17 +42,11 @@ def normalize_prediction_payload(
     feature_cols = list(parsed.feature_cols or [])
     contract_report: Dict[str, Any] = {}
     if feature_cols:
-        feature_cols, normalize_report = normalize_feature_cols(
-            feature_cols,
-            time_col=parsed.time_col,
-            value_col=parsed.value_col,
-        )
-        contract_report = build_feature_contract_report(
+        feature_cols, contract_report = resolve_feature_contract(
             df,
             time_col=parsed.time_col,
             value_col=parsed.value_col,
             feature_cols=feature_cols,
-            normalize_report=normalize_report,
         )
 
     normalized = parsed.dict()
