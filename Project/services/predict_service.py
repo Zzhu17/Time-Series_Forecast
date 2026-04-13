@@ -23,7 +23,6 @@ from utils.feature_contract import (
 )
 from utils.feature_pipeline import align_predict_df
 from utils.feature_selection import load_feature_contract
-from utils.metrics import observe_degrade, observe_predict
 from utils.metrics import normalize_degrade_reason, observe_degrade, observe_predict
 from utils.target_transform import inverse_transform_array
 from models.registry import FORECASTER_REGISTRY

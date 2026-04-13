@@ -38,7 +38,7 @@ def set_seed(seed: int | None):
 
 
 def configure_logging(cfg):
-    import logging, os
+    import logging
     lvl = getattr(logging, str(cfg.get('logging',{}).get('level','DEBUG')).upper(), logging.DEBUG)
     console = logging.StreamHandler()
     console.setLevel(logging.DEBUG if lvl == logging.DEBUG else lvl)

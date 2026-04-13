@@ -654,7 +654,7 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
     criterion = nn.MSELoss()
     early_stopping = EarlyStopping(patience=informer_cfg.get('patience', 5), verbose=True)
     residual_model = None
-    
+
     # --- 5. 训练循环 ---
     n_epochs = int(informer_cfg.get('n_epochs', config.get('training', {}).get('n_epochs', 10)))
     pred_len = informer_cfg['pred_len']
@@ -894,23 +894,23 @@ def train_informer_model(config: Dict[str, Any], seed: Optional[int] = None) -> 
     # --- 6. 加载最佳模型并在验证集上进行最终预测（收集残差训练所需数据） ---
     model.load_state_dict(torch.load(artifacts_cfg['model_path']))
     model.eval()
-    
+
     val_preds_scaled = []
     with torch.no_grad():
         for i, (batch_x_enc, batch_x_dec, _) in enumerate(val_loader):
             outputs = informer_forward(model, batch_x_enc, batch_x_dec, device=device, return_numpy=True)
             val_preds_scaled.append(safe_to_numpy(outputs[:, -pred_len:, :]))
-    
+
     val_preds_scaled = np.concatenate(val_preds_scaled, axis=0)
     assert_no_nan(val_preds_scaled, "Validation predictions (scaled)")
-    
+
     c_pred = int(val_preds_scaled.shape[-1])
     y_val_true_scaled = y_val[:, -pred_len:, :c_pred]
 
     # --- 7. 反归一化 ---
     val_preds_flat = val_preds_scaled.reshape(-1, val_preds_scaled.shape[-1])
     y_val_true_flat = y_val_true_scaled.reshape(-1, y_val_true_scaled.shape[-1])
-    
+
     val_preds_inversed = _inverse_transform_targets(val_preds_flat, scaler, config)
     y_val_true_inversed = _inverse_transform_targets(y_val_true_flat, scaler, config)
 
