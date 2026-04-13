@@ -1,13 +1,8 @@
-import json
-import sys
 from pathlib import Path
+import json
 
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parents[1]
-PROJECT_ROOT = ROOT / "Project"
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 from services.train_service import run_training_task  # noqa: E402
 

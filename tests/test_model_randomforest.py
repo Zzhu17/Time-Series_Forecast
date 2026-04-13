@@ -1,16 +1,13 @@
-import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
+from conftest import assert_7tuple_contract
+
 pytest.importorskip("optuna", reason="TEST_MATRIX_OPTIONAL_DEP_MISSING: optuna")
 
-ROOT = Path(__file__).resolve().parents[1]
-PROJECT_ROOT = ROOT / "Project"
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 from training.train_random_forest import train_random_forest_model  # noqa: E402
 
@@ -37,20 +34,12 @@ def _cfg(tmp_path: Path) -> dict:
 
 def test_randomforest_minimal_training_returns_7tuple(tmp_path: Path):
     out = train_random_forest_model(_df(), _cfg(tmp_path))
-    assert isinstance(out, tuple)
-    assert len(out) == 7
+    assert_7tuple_contract(out, "randomforest")
 
-    val_true, val_pred, test_true, test_pred, model, _test_df, params = out
-    assert isinstance(val_true, np.ndarray)
-    assert isinstance(val_pred, np.ndarray)
-    assert isinstance(test_true, np.ndarray)
-    assert isinstance(test_pred, np.ndarray)
-    assert len(val_true) == len(val_pred)
-    assert len(test_true) == len(test_pred)
-    assert model is not None
-    assert isinstance(params, dict)
+    *_, params = out
     assert params.get("model") == "randomforest"
     assert isinstance(params.get("split"), dict)
+
 
 
 def test_randomforest_missing_target_column_raises(tmp_path: Path):
@@ -59,7 +48,3 @@ def test_randomforest_missing_target_column_raises(tmp_path: Path):
         train_random_forest_model(bad, _cfg(tmp_path))
 
 
-def test_randomforest_prediction_structure_stable(tmp_path: Path):
-    val_true, val_pred, test_true, test_pred, *_ = train_random_forest_model(_df(), _cfg(tmp_path))
-    assert len(val_true) == len(val_pred), "val y_true/yhat length mismatch"
-    assert len(test_true) == len(test_pred), "test y_true/yhat length mismatch"

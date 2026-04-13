@@ -1,14 +1,9 @@
-import json
-import sys
 from pathlib import Path
+import json
 
 import numpy as np
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parents[1]
-PROJECT_ROOT = ROOT / "Project"
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 from utils.feature_pipeline import build_train_features, save_feature_contract_if_any  # noqa: E402
 
