@@ -1,11 +1,5 @@
-import sys
-from pathlib import Path
 import re
 
-ROOT = Path(__file__).resolve().parents[1]
-PROJECT_ROOT = ROOT / "Project"
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 from api.routes.models import list_models  # noqa: E402
 from models.registry import SUPPORTED_MODELS  # noqa: E402

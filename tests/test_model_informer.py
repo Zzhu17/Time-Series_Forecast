@@ -1,16 +1,9 @@
-import sys
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import pytest
 
 pytest.importorskip("torch", reason="TEST_MATRIX_OPTIONAL_DEP_MISSING: torch")
 
-ROOT = Path(__file__).resolve().parents[1]
-PROJECT_ROOT = ROOT / "Project"
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 from training.adaptor.informer_adaptor import train_informer_model_7tuple  # noqa: E402
 

@@ -1,7 +1,7 @@
+from pathlib import Path
+import sys
 import os
 import subprocess
-import sys
-from pathlib import Path
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "check_test_env.sh"
 

@@ -50,58 +50,7 @@ collect_skip_report() {
   local report_file="$2"
   local metrics_file="$3"
 
-  python - "$log_file" "$report_file" "$metrics_file" <<'PY'
-import json
-import re
-import sys
-from collections import Counter
-from pathlib import Path
-
-log_path = Path(sys.argv[1])
-report_path = Path(sys.argv[2])
-metrics_path = Path(sys.argv[3])
-
-text = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
-skip_lines = [line.strip() for line in text.splitlines() if line.startswith("SKIPPED ")]
-reasons = []
-
-for line in skip_lines:
-  m = re.match(r"^SKIPPED .*?:\d+:\s*(.*)$", line)
-  reason = m.group(1).strip() if m else line
-  reasons.append(reason)
-
-reason_counts = Counter(reasons)
-summary_skipped = 0
-for m in re.finditer(r"(\d+)\s+skipped", text):
-  summary_skipped = max(summary_skipped, int(m.group(1)))
-
-if summary_skipped == 0:
-  summary_skipped = len(skip_lines)
-
-top_reasons = reason_counts.most_common(10)
-
-report_lines = [
-  "# Skip summary",
-  f"summary_skipped={summary_skipped}",
-  f"skip_lines={len(skip_lines)}",
-  "",
-  "## Top skip reasons",
-]
-if top_reasons:
-  for reason, cnt in top_reasons:
-    report_lines.append(f"- {cnt} | {reason}")
-else:
-  report_lines.append("- 0 | No skips reported.")
-
-report_path.write_text("\n".join(report_lines) + "\n", encoding="utf-8")
-metrics = {
-  "summary_skipped": summary_skipped,
-  "skip_lines": len(skip_lines),
-  "reason_counts": dict(reason_counts),
-  "top_reasons": [{"reason": r, "count": c} for r, c in top_reasons],
-}
-metrics_path.write_text(json.dumps(metrics, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-PY
+  python scripts/collect_skip_report.py "$log_file" "$report_file" "$metrics_file"
 }
 
 enforce_full_skip_policy() {

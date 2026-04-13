@@ -1,16 +1,10 @@
 import json
-import sys
-from pathlib import Path
 
 import pytest
 
 pytest.importorskip("httpx", reason="TEST_MATRIX_OPTIONAL_DEP_MISSING: httpx")
 from fastapi.testclient import TestClient
 
-ROOT = Path(__file__).resolve().parents[1]
-PROJECT_ROOT = ROOT / "Project"
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 from api.app import app  # noqa: E402
 from api.routes import artifacts as artifacts_route  # noqa: E402
