@@ -8,7 +8,7 @@ Production-oriented time-series forecasting platform with FastAPI, Streamlit, Re
 python3.10 -m venv .venv
 source .venv/bin/activate
 pip install -r Project/requirements.txt
-cp .env.dev.example .env
+cp env/.env.dev.example .env
 PYTHONPATH=Project uvicorn api.app:app --reload --port 8000
 streamlit run Project/app.py
 ```
@@ -56,7 +56,7 @@ If you previously committed large files (e.g. `Project/artifacts/informer_model.
 
 - Python baseline: `3.10+`
 - Install lightweight dev tools: `pip install -r requirements-dev.txt`
-- Environment templates: `.env.dev.example`, `.env.staging.example`, `.env.prod.example`
+- Environment templates: `env/.env.dev.example`, `env/.env.staging.example`, `env/.env.prod.example`
 - 测试依赖最小集合（可导入即可运行测试收集）：`pytest`、`httpx`、`fastapi`
   - 快速校验命令：`./scripts/check_test_env.sh`
 - Run fast tests (no heavy deps required): `PYTHONPATH=Project pytest -q tests`
@@ -129,7 +129,7 @@ This repo includes minimal package metadata in `pyproject.toml` and uses `VERSIO
   - Default: SQLite at `Project/output/tasks.db` (env files use `tasks_dev.db` / `tasks_staging.db` / `tasks_prod.db`)
   - Override: set `DATABASE_URL` (e.g., `postgresql://user:pass@host:5432/dbname`) and ensure driver installed (`psycopg[binary]` for Postgres)
 - Logging: API/tasks emit JSON logs (logger name `ts-forecast`) with trace_id/task_id/duration where applicable.
-- Metrics: see `monitoring/alerts.yaml` for basic alert rules.
+- Metrics: see `infra/monitoring/alerts.yaml` for basic alert rules.
 - Training quality gate:
   - Every training run now performs a gate check before registry write.
   - Default threshold: `test.nrmse <= 1.0` (override via `TRAINING_GATE_MAX_NRMSE`).
@@ -143,7 +143,7 @@ This repo includes minimal package metadata in `pyproject.toml` and uses `VERSIO
 ## Docker (recommended)
 
 ```bash
-cp .env.dev.example .env
+cp env/.env.dev.example .env
 docker compose up --build
 ```
 
@@ -158,11 +158,11 @@ React UI (served by API): `http://localhost:8010/ui`
 
 ```bash
 # staging
-cp .env.staging.example .env.staging
+cp env/.env.staging.example .env.staging
 docker compose --env-file .env.staging -f docker-compose.yml -f docker-compose.staging.yml up --build
 
 # prod
-cp .env.prod.example .env.prod
+cp env/.env.prod.example .env.prod
 docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up --build
 ```
 
@@ -189,8 +189,8 @@ Grafana dashboard:
 - Dashboard: `TS Forecast - Ops`
 
 Prometheus alerts:
-- Rules live at `monitoring/alerts.yaml`
-- Alertmanager config: `monitoring/alertmanager.yml` (webhook -> `/alerts`)
+- Rules live at `infra/monitoring/alerts.yaml`
+- Alertmanager config: `infra/monitoring/alertmanager.yml` (webhook -> `/alerts`)
 - Includes `DegradeRateHigh` threshold alert based on `degrade_events_total`.
 
 ## Terraform (AWS production baseline)
@@ -258,7 +258,7 @@ Open `http://localhost:8000/ui`.
 The prod compose file includes a dedicated Nginx container serving the React build:
 
 ```
-cp .env.prod.example .env.prod
+cp env/.env.prod.example .env.prod
 docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up --build
 ```
 

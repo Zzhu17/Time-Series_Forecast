@@ -2,6 +2,7 @@ services:
   api:
     build:
       context: .
+      dockerfile: infra/docker/Dockerfile
       args:
         VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
     env_file:
@@ -22,7 +23,9 @@ services:
       - redis
 
   ui:
-    build: .
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile
     env_file:
       - .env
     environment:
@@ -38,7 +41,9 @@ services:
       - ./artifacts:/app/artifacts
       - ./Project/output:/app/Project/output
   worker:
-    build: .
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile
     env_file:
       - .env
     environment:
