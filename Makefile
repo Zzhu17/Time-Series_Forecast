@@ -35,4 +35,4 @@ run-ui:
 	streamlit run Project/app.py
 
 docker-up:
-	docker compose up --build
+	docker compose --project-directory . -f infra/compose/docker-compose.yml up --build

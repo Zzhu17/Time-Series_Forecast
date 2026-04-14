@@ -159,11 +159,11 @@ React UI (served by API): `http://localhost:8010/ui`
 ```bash
 # staging
 cp env/.env.staging.example .env.staging
-docker compose --env-file .env.staging -f docker-compose.yml -f docker-compose.staging.yml up --build
+docker compose --project-directory . --env-file .env.staging -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.staging.yml up --build
 
 # prod
 cp env/.env.prod.example .env.prod
-docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up --build
+docker compose --project-directory . --env-file .env.prod -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.prod.yml up --build
 ```
 
 Staging ports: API `8001`, UI `8502`, Redis `6380`  
@@ -174,7 +174,7 @@ Prod ports: React (Nginx) `80`, admin API `8002`, admin Streamlit `8503`
 Run the full ops stack:
 
 ```bash
-docker compose -f docker-compose.ops.yml up --build
+docker compose --project-directory . -f infra/compose/docker-compose.ops.yml up --build
 ```
 
 Endpoints:
@@ -259,7 +259,7 @@ The prod compose file includes a dedicated Nginx container serving the React bui
 
 ```
 cp env/.env.prod.example .env.prod
-docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up --build
+docker compose --project-directory . --env-file .env.prod -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.prod.yml up --build
 ```
 
 Open `http://localhost`.

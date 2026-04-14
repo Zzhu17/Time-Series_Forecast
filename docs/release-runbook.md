@@ -65,7 +65,7 @@ cd /opt/time-series-forecast/repo
 git fetch --all --tags
 git checkout <release-ref>
 git pull --ff-only origin <release-ref>
-docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+docker compose --project-directory . --env-file .env.prod -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.prod.yml up -d --build
 ```
 
 ## Health Verification
@@ -115,7 +115,7 @@ Rollback procedure:
    ```bash
    cd /opt/time-series-forecast/repo
    git checkout <previous-ref>
-   docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+   docker compose --project-directory . --env-file .env.prod -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.prod.yml up -d --build
    ```
 3. Re-run health verification and smoke run.
 4. If infrastructure itself is broken, use:

@@ -7,7 +7,7 @@
 - encrypted/versioned S3 bucket for artifacts
 - CloudWatch log group
 - SSM-enabled EC2 instance with Docker and Docker Compose
-- bootstrapping that clones this repository and starts `docker-compose.prod.yml`
+- bootstrapping that clones this repository and starts `infra/compose/docker-compose.prod.yml`
 
 ## Prerequisites
 
