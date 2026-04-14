@@ -22,25 +22,6 @@ def _deep_merge(base: dict, override: dict) -> dict:
             out[key] = val
     return out
 
-# 支持的模型结构规则：限制允许传入构造器的字段
-MODEL_CONFIG_RULES = {
-    "informer": {
-        'seq_len', 'label_len', 'pred_len',
-        'enc_in', 'dec_in', 'c_out',
-        'd_model', 'n_heads', 'e_layers', 'd_layers',
-        'd_ff', 'dropout', 'activation', 'device'
-    },
-    "lstm": {
-        'input_size', 'hidden_size', 'num_layers', 'output_size',
-        'dropout', 'device'
-    },
-    "prophet": set(),  # Prophet 无需额外参数
-    "random_forest": {
-        'n_estimators', 'max_depth', 'random_state'
-    }
-    # 可以继续添加其他模型的规则
-}
-
 # Helper function to load a YAML configuration file
 def load_yaml_config(path: str = CONFIG_PATH, env: Optional[str] = None) -> dict:
     """

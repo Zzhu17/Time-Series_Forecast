@@ -66,6 +66,13 @@ def infer_split_lengths(df: pd.DataFrame, val_true: object, test_true: object) -
     return {"train_len": train_len, "val_len": val_len, "test_len": test_len}
 
 
+def read_defaults(config: dict) -> Tuple[str, str]:
+    dft = config.get("default", {}) or {}
+    time_col = config.get("time_col", dft.get("time_col", "date"))
+    value_col = config.get("value_col", dft.get("value_col", "value"))
+    return str(time_col), str(value_col)
+
+
 def build_adapter_training_params(
     *,
     model: str,

@@ -4,16 +4,9 @@ import pandas as pd
 import random
 import numpy as np
 
-from training.adaptor.common import build_adapter_training_params, infer_split_lengths
+from training.adaptor.common import build_adapter_training_params, infer_split_lengths, read_defaults
 from training.train_lstm import train_lstm_model
 from utils.array_utils import clean_dataframe
-
-def _read_defaults(config: dict) -> tuple[str, str]:
-    # 兼容 default 段与根级两种写法
-    dft = config.get("default", {})
-    time_col = config.get("time_col", dft.get("time_col", "date"))
-    value_col = config.get("value_col", dft.get("value_col", "value"))
-    return time_col, value_col
 
 def _read_lstm_hparams(config: dict) -> dict:
     """
@@ -85,7 +78,7 @@ def train_lstm_model_7tuple(df: pd.DataFrame, config: dict):
     - 返回统一 7 元组
     """
     # 1) 读取字段
-    time_col, value_col = _read_defaults(config)
+    time_col, value_col = read_defaults(config)
     hparams = _apply_smoke_mode_if_needed(config, _read_lstm_hparams(config))
 
     # 2) 清洗/类型安全（不改变你的训练逻辑）

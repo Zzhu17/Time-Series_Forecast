@@ -2,11 +2,6 @@ import numpy as np
 from typing import Optional, Any, Tuple, Union, List
 import pandas as pd
 
-try:
-    from sklearn.preprocessing import MinMaxScaler  # type: ignore
-except Exception:
-    MinMaxScaler = None  # type: ignore[assignment]
-
 def ensure_array_safe(arr):
     if arr is None:
         return np.array([])
@@ -45,33 +40,6 @@ def safe_to_float_array(arr):
         except Exception:
             arr = np.full(arr.shape, np.nan, dtype=float)
     return arr
-
-# === 高级一键预处理 ===
-
-def advanced_preprocess(
-    df: Optional[pd.DataFrame],
-    value_col: str,
-    time_col: str,
-    feature_cols: Optional[List[str]] = None,
-    fillna_method: Optional[str] = 'ffill',
-    outlier_method: Optional[str] = 'clip3sigma',
-    time_to_datetime: bool = True,
-    drop_duplicates: bool = True,
-    clip_range: Optional[Tuple[float, float]] = None,
-    add_time_feat: bool = True
-) -> Optional[pd.DataFrame]:
-    """
-    一步到位的复杂预处理
-    """
-    df = clean_dataframe(
-        df, value_col, time_col, feature_cols,
-        fillna_method, outlier_method, time_to_datetime, drop_duplicates, clip_range
-    )
-    if df is not None and add_time_feat:
-        df = add_time_features(df, time_col)
-    if df is not None:
-        df = auto_convert_types(df, exclude_cols=[time_col])
-    return df
 
 def clean_dataframe(
     df: Optional[pd.DataFrame],
@@ -118,68 +86,6 @@ def clean_dataframe(
     if df is not None and clip_range and value_col and value_col in df.columns:
         df[value_col] = df[value_col].clip(lower=clip_range[0], upper=clip_range[1])
     return df
-
-def add_time_features(df: Optional[pd.DataFrame], time_col: str) -> Optional[pd.DataFrame]:
-    if df is None or time_col not in df.columns:
-        return df
-    df = df.copy()
-    dt = pd.to_datetime(df[time_col], errors='coerce')
-    df['year'] = dt.dt.year
-    df['month'] = dt.dt.month
-    df['day'] = dt.dt.day
-    df['weekday'] = dt.dt.weekday
-    return df
-
-def auto_convert_types(df: Optional[pd.DataFrame], exclude_cols: Optional[List[str]] = None) -> Optional[pd.DataFrame]:
-    if df is None:
-        return df
-    df = df.copy()
-    for col in df.columns:
-        if exclude_cols and col in exclude_cols:
-            continue
-        try:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-        except Exception:
-            pass
-    return df
-
-# === scaler相关 ===
-
-def apply_scaler_if_needed(arr: Optional[Any], scaler: Optional[Any] = None, inverse: bool = False) -> Optional[Any]:
-    """
-    根据需要应用归一化或反归一化处理
-    - arr: 输入数组（支持 1D, 2D, 3D）
-    - scaler: sklearn 的 scaler 对象（如 MinMaxScaler）
-    - inverse: 是否反归一化
-    """
-    if scaler is None or arr is None:
-        return arr
-
-    arr = ensure_numpy(arr)
-    if not hasattr(arr, "ndim"):
-        return arr
-    original_shape = arr.shape if hasattr(arr, "shape") else None
-
-    if arr.ndim == 1:
-        arr_reshaped = arr.reshape(-1, 1)
-    elif arr.ndim == 2:
-        arr_reshaped = arr
-    elif arr.ndim == 3:
-        arr_reshaped = arr.reshape(arr.shape[0] * arr.shape[1], arr.shape[2])
-    else:
-        raise ValueError("❌ 输入维度过高，仅支持最多3维数组。")
-
-    if inverse:
-        arr_scaled = scaler.inverse_transform(arr_reshaped)
-    else:
-        arr_scaled = scaler.transform(arr_reshaped)
-
-    if arr.ndim == 3 and original_shape is not None:
-        arr_scaled = arr_scaled.reshape(original_shape)
-    elif arr.ndim == 1:
-        arr_scaled = arr_scaled.ravel()
-
-    return arr_scaled
 
 # === array/滑窗统一 ===
 
@@ -400,67 +306,3 @@ def debug_stat(name: str, arr: Optional[Any], max_print: int = 3) -> None:
         print(f"  min={arr_np.min() if arr_np.size>0 else 'nan'}, max={arr_np.max() if arr_np.size>0 else 'nan'}, mean={arr_np.mean() if arr_np.size>0 else 'nan'}")
         flat = arr_np.flatten()
         print(f"  head={flat[:max_print]}, tail={flat[-max_print:]}")
-
-# === 其它实用函数 ===
-def safe_reshape_or_asarray(arr: Optional[Any], shape: Tuple[int, ...]) -> Optional[np.ndarray]:
-    arr = tensor_to_numpy(arr)
-    arr = safe_to_float_array(arr)
-    if arr is not None and hasattr(arr, "reshape") and isinstance(shape, tuple) and len(shape) > 0:
-        try:
-            return arr.reshape(shape)
-        except Exception:
-            try:
-                return np.asarray(arr)
-            except Exception:
-                return None
-    elif arr is not None:
-        try:
-            return np.asarray(arr)
-        except Exception:
-            return None
-    return None
-
-def match_tensor_shapes(a: Any, b: Any, feature_dim: int = 1, raise_err: bool = True) -> Tuple[Any, Any]:
-    """
-    自动对齐两个张量/数组的shape到 (batch, seq_len, feature_dim)
-    - a, b: 支持 numpy.ndarray / torch.Tensor
-    - feature_dim: 最后一个维度默认1（单变量），多变量可以自定
-    """
-    import numpy as np
-    try:
-        import torch
-    except ImportError:
-        torch = None
-
-    def to_np(x):
-        if torch and isinstance(x, torch.Tensor):
-            return x.detach().cpu().numpy()
-        return np.asarray(x)
-
-    def _ensure_shape(x, ref_shape):
-        x = to_np(x)
-        if x.ndim == 1:
-            # (seq_len,) -> (1, seq_len, feature_dim)
-            return x.reshape(1, -1, feature_dim)
-        elif x.ndim == 2:
-            # (batch, seq_len) or (seq_len, feature) -> (batch, seq_len, feature_dim)
-            if x.shape[-1] != feature_dim:
-                return x.reshape(x.shape[0], x.shape[1], feature_dim)
-            return x
-        elif x.ndim == 3:
-            return x
-        else:
-            if raise_err:
-                raise ValueError(f"match_tensor_shapes: 不支持的输入 shape={x.shape}")
-            return x
-
-    a_ = _ensure_shape(a, None)
-    b_ = _ensure_shape(b, None)
-
-    # 如果是 torch，转回 torch，dtype和device跟原来保持一致
-    if torch and (isinstance(a, torch.Tensor) or isinstance(b, torch.Tensor)):
-        device = a.device if isinstance(a, torch.Tensor) else (b.device if isinstance(b, torch.Tensor) else 'cpu')
-        dtype = a.dtype if isinstance(a, torch.Tensor) else (b.dtype if isinstance(b, torch.Tensor) else torch.float32)
-        a_ = torch.tensor(a_, device=device, dtype=dtype)
-        b_ = torch.tensor(b_, device=device, dtype=dtype)
-    return a_, b_

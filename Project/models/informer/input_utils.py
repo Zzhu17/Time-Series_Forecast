@@ -79,17 +79,11 @@ def build_main_and_feature_windows(
     Y = auto_transformer_shape(Y)
     if X_feature is not None:
         X_feature = auto_transformer_shape(X_feature)
-    # --- 可视化断点检查滑窗采样 ---
-    # 打印前3个x/y滑窗实际样本（便于人工检查是否与原始数据对齐）
-    for k in range(min(3, len(X_enc))):
-        print(f"[DEBUG][滑窗检查] x_enc[{k}]: {X_enc[k].flatten()}")
-        print(f"[DEBUG][滑窗检查] Y[{k}]: {Y[k].flatten()}")
     debug_stat('build_main_and_feature_windows/X_enc', X_enc)
     debug_stat('build_main_and_feature_windows/X_dec', X_dec)
     debug_stat('build_main_and_feature_windows/Y', Y)
     if X_feature is not None:
         debug_stat('build_main_and_feature_windows/X_feature', X_feature)
-    # --- end ---
     return X_enc, X_dec, Y, X_feature
 
 def prepare_informer_inputs(
