@@ -21,6 +21,8 @@ data "aws_availability_zones" "available" {
   state = "available"
 }
 
+data "aws_caller_identity" "current" {}
+
 data "aws_ami" "ubuntu" {
   most_recent = true
   owners      = ["099720109477"]
@@ -39,6 +41,7 @@ data "aws_ami" "ubuntu" {
 locals {
   name_prefix        = "${var.project_name}-${var.environment}"
   availability_zones = length(var.availability_zones) > 0 ? var.availability_zones : slice(data.aws_availability_zones.available.names, 0, length(var.public_subnet_cidrs))
+  tsf_api_token_ssm_parameter_path = trimprefix(var.tsf_api_token_ssm_parameter_name, "/")
   common_tags = {
     Project     = var.project_name
     Environment = var.environment
@@ -167,6 +170,24 @@ resource "aws_iam_role_policy_attachment" "cwagent" {
   policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
 }
 
+resource "aws_iam_role_policy" "ssm_parameter_access" {
+  name = "${local.name_prefix}-ssm-parameter-access"
+  role = aws_iam_role.ec2.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter"
+        ]
+        Resource = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${local.tsf_api_token_ssm_parameter_path}"
+      }
+    ]
+  })
+}
+
 resource "aws_iam_instance_profile" "ec2" {
   name = "${local.name_prefix}-instance-profile"
   role = aws_iam_role.ec2.name
@@ -275,7 +296,7 @@ resource "aws_instance" "app" {
     git_ref               = var.repository_ref
     project_name          = var.project_name
     repository_clone_url  = var.repository_clone_url
-    tsf_api_token         = var.tsf_api_token
+    ssm_api_token_name    = var.tsf_api_token_ssm_parameter_name
     database_url          = var.database_url
     celery_enabled        = tostring(var.celery_enabled ? 1 : 0)
     celery_broker_url     = var.celery_broker_url

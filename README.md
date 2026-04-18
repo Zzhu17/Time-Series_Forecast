@@ -79,6 +79,15 @@ docker compose --project-directory . -f infra/compose/docker-compose.yml up --bu
 - Production override: `infra/compose/docker-compose.prod.yml`
 - Ops stack: `infra/compose/docker-compose.ops.yml`
 
+## Security Defaults
+
+- `staging` / `prod` now require `TSF_API_TOKEN`
+- CORS is environment-driven through `TSF_CORS_ALLOW_ORIGINS`
+- raw client IP logging is disabled by default
+- the ops stack requires `GF_SECURITY_ADMIN_PASSWORD`
+- Terraform admin CIDRs must be explicitly set and cannot be `0.0.0.0/0`
+- Terraform now expects a pre-created SSM SecureString for the API token instead of storing the token in Terraform state
+
 ### Infrastructure Assets
 
 - Environment templates: `env/`

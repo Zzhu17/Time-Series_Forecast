@@ -8,17 +8,16 @@ from fastapi.staticfiles import StaticFiles
 
 from api.observability import add_observability
 from api.routes import alerts, artifacts, health, metrics, models, predict, tasks, train
-from api.security import verify_api_token
+from api.security import get_cors_allow_origins, validate_runtime_security, verify_api_token
 
 app = FastAPI(title="TS Forecast API", version="0.1.0", dependencies=[Depends(verify_api_token)])
 
-# CORS for React frontend (adjust origins if you want to lock down)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=get_cors_allow_origins(),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-Id", "X-Trace-Id"],
 )
 
 # Optional: serve built frontend (if present) from Project/frontend/dist
@@ -30,6 +29,7 @@ if frontend_dist.exists():
     app.mount("/ui", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
 
 add_observability(app)
+app.add_event_handler("startup", validate_runtime_security)
 
 app.include_router(health.router)
 app.include_router(metrics.router)

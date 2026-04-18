@@ -7,6 +7,7 @@ from typing import Optional
 
 from fastapi import FastAPI, Request
 
+from api.security import redact_client_ip, should_log_client_ip
 from utils.logging_utils import log_json, setup_json_logger
 from utils.metrics import observe_http_request
 
@@ -65,7 +66,11 @@ def add_observability(app: FastAPI) -> None:
                 path=path,
                 status=status,
                 duration_ms=int(duration * 1000),
-                client_ip=getattr(request.client, "host", None),
+                client_ip=(
+                    redact_client_ip(getattr(request.client, "host", None))
+                    if should_log_client_ip()
+                    else None
+                ),
                 error=str(error) if error else None,
             )
             if response is not None:

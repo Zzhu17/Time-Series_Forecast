@@ -43,7 +43,14 @@ variable "app_ingress_cidrs" {
 variable "admin_cidr_blocks" {
   description = "CIDR blocks allowed to reach SSH, admin Streamlit, and direct API diagnostics."
   type        = list(string)
-  default     = ["0.0.0.0/0"]
+  default     = []
+
+  validation {
+    condition = length(var.admin_cidr_blocks) > 0 && alltrue([
+      for cidr in var.admin_cidr_blocks : cidr != "0.0.0.0/0"
+    ])
+    error_message = "admin_cidr_blocks must be explicitly set and must not contain 0.0.0.0/0."
+  }
 }
 
 variable "instance_type" {
@@ -93,11 +100,15 @@ variable "repository_ref" {
   default     = "main"
 }
 
-variable "tsf_api_token" {
-  description = "Optional bearer token required by the FastAPI service."
+variable "tsf_api_token_ssm_parameter_name" {
+  description = "Name of a pre-created SSM SecureString parameter that stores the API bearer token."
   type        = string
   default     = ""
-  sensitive   = true
+
+  validation {
+    condition     = length(trimspace(var.tsf_api_token_ssm_parameter_name)) > 0
+    error_message = "tsf_api_token_ssm_parameter_name must be set to an existing SSM SecureString parameter name."
+  }
 }
 
 variable "database_url" {

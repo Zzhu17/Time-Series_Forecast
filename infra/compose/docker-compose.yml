@@ -9,6 +9,7 @@ services:
       - .env
     environment:
       PYTHONPATH: /app/Project
+      TSF_API_TOKEN: ${TSF_API_TOKEN:-}
       CELERY_ENABLED: ${CELERY_ENABLED:-1}
       CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
       CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
@@ -30,6 +31,7 @@ services:
       - .env
     environment:
       TSF_API_URL: ${TSF_API_URL:-http://api:8000}
+      TSF_API_TOKEN: ${TSF_API_TOKEN:-}
       PYTHONPATH: /app/Project
     command: streamlit run Project/app.py --server.address 0.0.0.0 --server.port ${UI_PORT:-8501}
     depends_on:

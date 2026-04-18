@@ -110,9 +110,7 @@ export default function App() {
   const [apiBaseInput, setApiBaseInput] = useState(
     () => localStorage.getItem("tsf_api_base") || DEFAULT_API
   );
-  const [apiToken, setApiToken] = useState(
-    () => localStorage.getItem("tsf_api_token") || ""
-  );
+  const [apiToken, setApiToken] = useState("");
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState("");
   const [loadingModels, setLoadingModels] = useState(false);
@@ -160,8 +158,8 @@ export default function App() {
   }, [apiBaseInput]);
 
   useEffect(() => {
-    localStorage.setItem("tsf_api_token", apiToken);
-  }, [apiToken]);
+    localStorage.removeItem("tsf_api_token");
+  }, []);
 
   useEffect(() => {
     let mounted = true;
